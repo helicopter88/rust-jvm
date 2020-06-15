@@ -20,7 +20,7 @@ pub(crate) enum ConstantPool
     Empty(),
     Integer(i32),
     Float(f32),
-    Long(u64),
+    Long(i64),
     Double(f64),
     FieldRef(u16, u16),
     MethodRef(u16, u16),

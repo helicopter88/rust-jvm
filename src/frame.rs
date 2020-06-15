@@ -1,11 +1,10 @@
+use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::class::Class;
-use crate::enums::{Arithmetic, ConstantPool, LocalVariable, BootstrapMethod};
+use crate::enums::{Arithmetic, BootstrapMethod, ConstantPool, LocalVariable};
 use crate::vm::VM;
-
-use std::borrow::Borrow;
 
 type Stack = VecDeque<LocalVariable>;
 
@@ -107,6 +106,21 @@ fn execute_sub(stack: &mut Stack) -> Result<(), String>
     Ok(())
 }
 
+fn execute_if(op: u8, stack: &mut Stack) -> Result<bool, String> {
+    let b = stack.pop_front().ok_or("Missing stack variable 1")?;
+    let a = if op >= 0x99 && op <=
+        0x9e { LocalVariable::Int(0) } else { stack.pop_front().ok_or("Missing stack variable 2")? };
+    match op {
+        0x95 | 0x99 => { Ok(a == b) }
+        0xa0 | 0x9a => { Ok(a != b) }
+        0xa1 | 0x9b => { Ok(a < b) }
+        0xa2 | 0x9c => { Ok(a >= b) }
+        0xa3 | 0x9d => { Ok(a > b) }
+        0xa4 | 0x9e => { Ok(a <= b) }
+        _ => Err(format!("Unexpected op {}", op))
+    }
+}
+
 fn parse_type(prototype: &str) -> Result<(usize, String), String>
 {
     let mut ret_idx = 0;
@@ -135,6 +149,25 @@ fn parse_type(prototype: &str) -> Result<(usize, String), String>
         count += 1;
     };
     Ok((count, prototype.split_at(ret_idx).1.to_string()))
+}
+
+fn execute_iconv(op: u8, stack: &mut Stack) -> Result<(), String> {
+    let int = stack.pop_front().ok_or("Empty stack")?;
+    stack.push_front(match int {
+        LocalVariable::Int(num) => {
+            match op {
+                0x85 => { Ok(LocalVariable::Long(num as i64)) }
+                0x86 => { Ok(LocalVariable::Float(num as f32)) }
+                0x87 => { Ok(LocalVariable::Double(num as f64)) }
+                0x91 => { Ok(LocalVariable::Byte(num as u8)) }
+                0x92 => { Ok(LocalVariable::Char(num as u8 as char)) }
+                0x93 => { Ok(LocalVariable::Short(num as i16)) }
+                _ => Err(format!("Unexpected op, {:x}", op))
+            }
+        }
+        _ => Err(format!("Expected Int, found {:?}", int))
+    }?);
+    Ok(())
 }
 
 fn read_u16_from_vec(data: &Vec<u8>, starting_point: usize) -> u16 {
@@ -225,10 +258,10 @@ impl Frame {
             ConstantPool::MethodHandle(kind, reference_) => {
                 let reference = *reference_ as usize;
                 match kind {
-                    1 | 2 | 3 | 4 | 5 | 6|  7 | 8 | 9 => {
+                    1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 => {
                         match cp.get(reference).ok_or(format!("Pointed to non existing thing: {}", reference).to_string())? {
-                            ConstantPool::FieldRef(class_idx, nat) | ConstantPool::MethodRef(class_idx, nat) | ConstantPool::InterfaceMethodRef(class_idx, nat)=> {
-                                 Ok((self.vm.resolve_string(*class_idx as usize), self.find_name_and_type(*nat)?))
+                            ConstantPool::FieldRef(class_idx, nat) | ConstantPool::MethodRef(class_idx, nat) | ConstantPool::InterfaceMethodRef(class_idx, nat) => {
+                                Ok((self.vm.resolve_string(*class_idx as usize), self.find_name_and_type(*nat)?))
                             }
                             d => { Err(format!("Unexpected field {:?} for kind: {}", d, kind).to_string()) }
                         }
@@ -326,17 +359,20 @@ impl Frame {
                 0x2 | 0x3 | 0x4 | 0x5 | 0x6 | 0x7 | 0x8 /* iconst_<d> */ => {
                     execute_load_const(op, &mut self.stack);
                 }
-                0x12 /*ldc*/  => {
+                0x12 /*ldc*/ => {
                     let idx = self.get_short();
                     match self.class.constant_pool.get(idx as usize).ok_or(format!("Couldn't find item in cp at {}", idx))? {
                         ConstantPool::Integer(num) => { self.stack.push_front(LocalVariable::Int(*num)); }
                         ConstantPool::StringIndex(s_idx) => { self.stack.push_front(LocalVariable::Reference(*s_idx)); }
                         def => return Err(format!("Unexpected item={:?}", def))
                     };
-
                 }
                 0x1A | 0x1B | 0x1C | 0x1D/* iload_<n> */ => {
                     execute_iload(op, &self.locals, &mut self.stack)?
+                }
+                0x10 => /*bipush*/ {
+                    let byte = self.get_short() as i32;
+                    self.stack.push_front(LocalVariable::Int(byte));
                 }
                 0x2A | 0x2B | 0x2C | 0x2D/* aload_<n> */ => {
                     execute_aload(op, &self.locals, &mut self.stack)?
@@ -353,7 +389,20 @@ impl Frame {
                 0x64 | 0x65 | 0x66 | 0x67 => {
                     execute_sub(&mut self.stack)?
                 }
-                0xBA /*invokeVirtual */ => {
+                0x91 | 0x92 | 0x93 | 0x85 | 0x86 | 0x87 /*iconv*/ => {
+                    execute_iconv(op, &mut self.stack);
+                }
+                0xa7 /*goto*/ => {
+                    let idx = self.get_index_byte();
+                    self.ip += idx as u32;
+                }
+                0x9f | 0xa0 | 0xa1 | 0xa2 | 0xa3 | 0xa4 | 0x99 | 0x9a | 0x9b | 0x9c | 0x9d | 0x9e => /*if_i<cmp>*/{
+                    let idx = self.get_index_byte();
+                    if execute_if(op, &mut self.stack)? {
+                        self.ip += idx as u32;
+                    }
+                }
+                0xba /*invokeVirtual */ => {
                     let idx = self.get_index_byte();
                     let _ = self.get_index_byte();
                     let (bootstrap_idx, (method_name, method_type)) = self.find_invoke_dynamic(idx)?;
@@ -374,7 +423,7 @@ impl Frame {
                     let mut n_frame = new_frame;
                     let ret = n_frame.exec()?;
                     match ret {
-                        LocalVariable::Void() => { }
+                        LocalVariable::Void() => {}
                         def => {
                             self.locals.push(def)
                         }
@@ -410,7 +459,7 @@ impl Frame {
                             let mut n_frame = new_frame;
                             let ret = n_frame.exec()?;
                             match ret {
-                                LocalVariable::Void() => { }
+                                LocalVariable::Void() => {}
                                 def => {
                                     self.stack.push_front(def)
                                 }

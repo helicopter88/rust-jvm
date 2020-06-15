@@ -136,7 +136,7 @@ impl VM
                 }
                 0x03 => { ConstantPool::Integer(self.read_i32()) }
                 0x04 => { ConstantPool::Float(self.read_i32() as f32) }
-                0x05 => { ConstantPool::Long(self.read_u64()) }
+                0x05 => { ConstantPool::Long(self.read_u64() as i64) }
                 0x06 => { ConstantPool::Double(self.read_u64() as f64) }
                 0x07 => { ConstantPool::ClassIndex(self.read_u16()) }
                 0x08 => { ConstantPool::StringIndex(self.read_u16()) }
