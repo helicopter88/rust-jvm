@@ -429,7 +429,7 @@ impl Frame {
                         }
                     };
                 }
-                0xB2 | 0xB6 | 0xB7 | 0xB8 /* getStatic, invokeVirtual, invokeSpecial, invokeStatic */ => {
+                0xB2 | 0xB4 | 0xB5 | 0xB6 | 0xB7 | 0xB8/* getStatic, getfield, putfield, invokeVirtual, invokeSpecial, invokeStatic */ => {
                     let idx = self.get_index_byte();
                     let (class_name, (method_name, method_type)) = self.find_method_or_field(idx)?;
                     let class_name_ref = &class_name;
@@ -449,6 +449,37 @@ impl Frame {
                                 }
                                 count += 1;
                             }
+                        }
+                        0xB4 => {
+                            let class_ref = self.stack.pop_front().ok_or("Empty stack when getting field")?;
+                            match class_ref {
+                                LocalVariable::Reference(obj_ref) => {
+                                    let obj_ref = self.vm.objects
+                                        .borrow()
+                                        .get(obj_ref as usize)
+                                        .ok_or("Class did not exist")?.clone();
+                                    let field_val = obj_ref.fields.borrow().get(&method_name)
+                                        .ok_or("Field did not exist")?.clone();
+                                    self.stack.push_front(field_val.clone());
+                                    Ok(())
+                                }
+                                _ => Err(format!("Unexpected type {:?}", class_ref))
+                            }?
+                        }
+                        0xB5 => {
+                            let field_val = self.stack.pop_front().ok_or("Empty stack when retrieving field")?;
+                            let class_ref = self.stack.pop_front().ok_or("Empty stack when putting field")?;
+                            match class_ref {
+                                LocalVariable::Reference(obj_ref) => {
+                                    self.vm.objects
+                                        .borrow()
+                                        .get(obj_ref as usize)
+                                        .ok_or("Class did not exist")?
+                                        .put_field(&method_name, field_val);
+                                    Ok(())
+                                }
+                                _ => Err(format!("Unexpected type {:?}", class_ref))
+                            }?
                         }
                         0xB6 | 0xB7  /* invokeVirtual, invokeSpecial */ => {
                             for _ in 0..=argc {

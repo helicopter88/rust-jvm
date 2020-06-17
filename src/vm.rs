@@ -306,7 +306,7 @@ impl VM
         self.objects.borrow_mut().push(Rc::new(Object {
             class: class.clone(),
             super_instance: None,
-            fields: vec![],
+            fields: RefCell::new(HashMap::new()),
         }));
         self.objects.borrow().len() - 1
     }
@@ -316,7 +316,11 @@ impl VM
         let class = &vm.classes.borrow()[&main_class];
         let frame = Frame::new(&vm, &class, "main".to_string(), vec![]);
 
-        println!("Result of {}: {:#?}", &class.name, frame.unwrap().exec());
+        match  frame.unwrap().exec() {
+            Ok(res) => { println!("Result of {}: {:#?}", &class.name, res); }
+            Err(msg) => { panic!(msg); }
+        }
+
     }
     fn read_u8(&mut self) -> u8
     {
