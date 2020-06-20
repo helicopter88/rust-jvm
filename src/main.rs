@@ -13,6 +13,7 @@ mod vm;
 struct Cli {
     /// Input file to read
     file: String,
+    classpath: String
 }
 
 
@@ -20,7 +21,8 @@ struct Cli {
 fn main() -> CliResult {
     let matches = Cli::from_args();
     let myfile = &matches.file;
-    let vm = VM::new(myfile);
+    let mycp = &matches.classpath;
+    let vm = VM::new(myfile, mycp);
     VM::start(vm.unwrap(), "Add".to_string());
     Ok(())
 }

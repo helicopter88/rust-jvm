@@ -249,6 +249,20 @@ impl Frame {
         Err(format!("Method not found: {}", f.method_name))
     }
 
+    pub(crate) fn resolve_string(&self, idx: usize) -> String
+    {
+        return match &self.class.constant_pool[idx] {
+            ConstantPool::JvmString(str) => { str.to_string() }
+            ConstantPool::ClassIndex(recursive_idx) => {
+                self.resolve_string((*recursive_idx) as usize)
+            }
+            def => {
+                dbg!("Wtf Requested index: {} which is instead a {:#?}", idx, def);
+                "".to_string()
+            }
+        };
+    }
+
     fn resolve_method_handle_ref(&self, idx: u16) -> Result<(String, (String, String)), String>
     {
         let cp = &self.class.constant_pool;
@@ -261,7 +275,7 @@ impl Frame {
                     1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 => {
                         match cp.get(reference).ok_or(format!("Pointed to non existing thing: {}", reference).to_string())? {
                             ConstantPool::FieldRef(class_idx, nat) | ConstantPool::MethodRef(class_idx, nat) | ConstantPool::InterfaceMethodRef(class_idx, nat) => {
-                                Ok((self.vm.resolve_string(*class_idx as usize), self.find_name_and_type(*nat)?))
+                                Ok((self.resolve_string(*class_idx as usize), self.find_name_and_type(*nat)?))
                             }
                             d => { Err(format!("Unexpected field {:?} for kind: {}", d, kind).to_string()) }
                         }
@@ -280,11 +294,11 @@ impl Frame {
         let ref_ = &cp[idx as usize];
         match ref_ {
             ConstantPool::MethodRef(class_idx, method_idx) => {
-                Ok((self.vm.resolve_string(*class_idx as usize),
+                Ok((self.resolve_string(*class_idx as usize),
                     self.find_name_and_type(*method_idx)?))
             }
             ConstantPool::FieldRef(class_idx, method_idx) => {
-                Ok((self.vm.resolve_string(*class_idx as usize),
+                Ok((self.resolve_string(*class_idx as usize),
                     self.find_name_and_type(*method_idx)?))
             }
             def => Err(format!("Found {:#?} which is not a method or field", def))
@@ -298,8 +312,8 @@ impl Frame {
         let ref_ = &cp[idx as usize];
         match ref_ {
             ConstantPool::NameAndTypeIndex(name_idx, type_idx) => {
-                Ok((self.vm.resolve_string(*name_idx as usize),
-                    self.vm.resolve_string(*type_idx as usize)))
+                Ok((self.resolve_string(*name_idx as usize),
+                    self.resolve_string(*type_idx as usize)))
             }
             def => Err(format!("Found {:#?} which is not a NaT", def))
         }
@@ -349,12 +363,12 @@ impl Frame {
         if self.will_execute_native_method
         {
             let method = self.vm.native_methods.borrow().get(&VM::make_native_method_name(&self.class.name, &self.method_name.clone())).ok_or("This should never be possible")?;
-            return Ok(method(&self.vm, self.locals.as_slice()));
+            return Ok(method(&self.class, &self, self.locals.as_slice()));
         }
         loop {
             let curr_ip = self.ip;
             let op = self.code[curr_ip as usize];
-            dbg!(format!("OP: {}/{:x}({}) stack: {:?} locals: {:?}", &self.method_name, op, op, &self.stack, &self.locals));
+            dbg!(&self.method_name, op, &self.stack, &self.locals);
             match op {
                 0x2 | 0x3 | 0x4 | 0x5 | 0x6 | 0x7 | 0x8 /* iconst_<d> */ => {
                     execute_load_const(op, &mut self.stack);
@@ -411,7 +425,7 @@ impl Frame {
 
                     let class_name_ref = &method_ref.0;
                     let mut new_stack = vec![];
-                    let class = &self.vm.classes.borrow().get(class_name_ref)
+                    let class = &self.vm.get_class(class_name_ref)
                         .ok_or(format!("Could not find class {:#?}", class_name_ref).to_string())?
                         .clone();
                     let (argc, _ret) = parse_type(&method_type)?;
@@ -434,7 +448,7 @@ impl Frame {
                     let (class_name, (method_name, method_type)) = self.find_method_or_field(idx)?;
                     let class_name_ref = &class_name;
                     let mut new_stack = vec![];
-                    let class = &self.vm.classes.borrow().get(class_name_ref)
+                    let class = &self.vm.get_class(class_name_ref)
                         .ok_or(format!("Could not find class {:#?}", class_name_ref).to_string())?
                         .clone();
                     let (argc, _ret) = parse_type(&method_type)?;
@@ -536,7 +550,7 @@ impl Frame {
 
                 0xBB /* new */ => {
                     let idx = self.get_index_byte();
-                    let class_name = self.vm.resolve_string(idx as usize);
+                    let class_name = self.resolve_string(idx as usize);
 
                     self.stack.push_front(LocalVariable::Reference((self.vm.new_object(class_name)) as u16))
                 }
