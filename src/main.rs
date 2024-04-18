@@ -1,4 +1,4 @@
-
+use std::rc::Rc;
 use quicli::prelude::*;
 use structopt::StructOpt;
 
@@ -22,7 +22,7 @@ fn main() -> CliResult {
     let matches = Cli::from_args();
     let myfile = &matches.file;
     let mycp = &matches.classpath;
-    let vm = VM::new(myfile, mycp);
-    VM::start(vm.unwrap(), "Add".to_string());
+    let mut vm = VM::new(myfile, mycp).unwrap();
+    VM::start(&mut vm, "HelloWorld".to_string());
     Ok(())
 }

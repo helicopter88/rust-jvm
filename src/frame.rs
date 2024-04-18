@@ -1,4 +1,5 @@
 use std::borrow::{Borrow, BorrowMut};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
@@ -10,16 +11,15 @@ use std::ops::Neg;
 
 type Stack = VecDeque<LocalVariable>;
 
-#[derive(Clone)]
 pub struct Frame {
     ip: u32,
     code: Vec<u8>,
     locals: Vec<LocalVariable>,
     stack: Stack,
-    class: Rc<Class>,
+    class: Box<Rc<Class>>,
     method_name: String,
     method_type: String,
-    pub(crate) vm: Rc<VM>,
+    pub(crate) vm: &'static mut VM,
     bootstrap_methods: Vec<BootstrapMethod>,
     will_execute_native_method: bool,
 }
@@ -260,7 +260,7 @@ fn execute_iconv(op: u8, stack: &mut Stack) -> Result<(), String> {
 }
 
 fn read_u16_from_vec(data: &Vec<u8>, starting_point: usize) -> u16 {
-    let mut d = [0 as u8; 2];
+    let mut d = [0u8; 2];
     for (idx, a) in data[starting_point..starting_point + 2].iter().enumerate() {
         d[idx] = *a;
     }
@@ -268,12 +268,12 @@ fn read_u16_from_vec(data: &Vec<u8>, starting_point: usize) -> u16 {
 }
 
 impl Frame {
-    pub fn new(vm: &Rc<VM>, class: &Rc<Class>, method_name: &str, local_variables: Vec<LocalVariable>, method_type: &str) -> Result<Frame, String>
+    pub fn new(vm: &mut VM, class: Rc<Class>, method_name: &str, local_variables: Vec<LocalVariable>, method_type: &str) -> Result<Frame, String>
     {
         let exec_method = |f: &mut Frame, m: &Field| -> Result<Frame, String> {
             for attrib in &m.attributes {
                 if attrib.name.as_str() == "Code" && attrib.data.len() > 8 {
-                    let mut d = [0 as u8; 2];
+                    let mut d = [0u8; 2];
                     for (idx, a) in attrib.data[2..4].iter().enumerate() {
                         d[idx] = *a;
                     }
@@ -283,7 +283,6 @@ impl Frame {
                     for (idx, arg) in local_variables.iter().enumerate() {
                         f.locals[idx] = arg.clone();
                     }
-                    return Ok(f.clone());
                 }
             }
             return Err(format!("Couldn't find code for method {}: {} ({:?}/{:?})", method_name, method_type, &m.attributes, &m.flags));
@@ -294,15 +293,15 @@ impl Frame {
             code: vec![],
             locals: vec![],
             stack: VecDeque::new(),
-            class: class.clone(),
+            class: class.clone().into(),
             method_name: method_name.to_string(),
             method_type: method_type.to_string(),
-            vm: vm.clone(),
+            vm: vm,
             bootstrap_methods: vec![],
             will_execute_native_method: false,
         };
 
-        if vm.native_methods.borrow().contains_key(&VM::make_native_method_name(&class.name, method_name)) {
+        if vm.native_methods.contains_key(&VM::make_native_method_name(&class.name, method_name)) {
             dbg!("Native method {}", method_name);
             for arg in local_variables.iter() {
                 f.locals.push(arg.clone());
@@ -315,14 +314,15 @@ impl Frame {
         {
             println!("Candidate method: '{}' -> '{}' - I am looking for '{}' -> '{}'", method.name, method.descriptor, method_name, method_type);
             if method.name.eq(method_name) && method.descriptor.eq(method_type) {
-                return exec_method(&mut f, method);
+                exec_method(&mut f, method);
+                return Ok(f)
             }
         }
 
         let maybe_super_class = vm.get_class(&class.super_class);
         if let Some(super_class) = maybe_super_class
         {
-            return Frame::new(&vm, &super_class, method_name, local_variables, method_type);
+            return Frame::new(vm, super_class.clone(), method_name, local_variables, method_type);
         }
 
         for attrib in &class.attributes {
@@ -335,7 +335,7 @@ impl Frame {
                     index += 2;
                     let num_arguments = read_u16_from_vec(&attrib.data, index);
                     index += 2;
-                    let mut args = vec![0 as u16; num_arguments as usize];
+                    let mut args = vec![0u16; num_arguments as usize];
                     for _ in 0..num_arguments {
                         args.push(read_u16_from_vec(&attrib.data, index));
                         index += 2
@@ -466,8 +466,10 @@ impl Frame {
     {
         if self.will_execute_native_method
         {
-            let method = self.vm.native_methods.borrow().get(&VM::make_native_method_name(&self.class.name, &self.method_name.clone())).ok_or("This should never be possible")?;
-            return method(&self.class, &self, self.locals.as_slice());
+            let class = &self.class.clone();
+            let locals = &self.locals.clone();
+            let method = self.vm.native_methods.get(&VM::make_native_method_name(&self.class.name, &self.method_name)).ok_or("This should never be possible")?.clone();
+            return method(class, self, locals);
         }
         loop {
             let curr_ip = self.ip;
@@ -528,7 +530,7 @@ impl Frame {
                         ConstantPool::Long(num) => { self.stack.push_front(LocalVariable::Long(*num)); }
                         ConstantPool::Double(f) => { self.stack.push_front(LocalVariable::Double(*f)) }
                         ConstantPool::StringIndex(_s_idx) => {
-                            self.stack.push_front(LocalVariable::Reference(ReferenceKind::ObjectReference(self.vm.new_object("java/lang/String"))));
+                            self.stack.push_front(LocalVariable::Reference(ObjectReference(self.vm.new_object("java/lang/String"))));
                         }
                         ConstantPool::ClassIndex(idx) => {
                             self.stack.push_front(LocalVariable::Reference(ReferenceKind::ClassReference(self.resolve_string(*idx as usize))))
@@ -753,7 +755,7 @@ impl Frame {
                         new_stack.push(self.stack.pop_front().ok_or(format!("Empty stack when calling new method, {}", ret))?);
                     }
                     new_stack.reverse();
-                    let new_frame = Frame::new(&self.vm, &class, &method_name, new_stack.clone(), &method_type)?;
+                    let new_frame = Frame::new(self.vm, class.clone(), &method_name, new_stack.clone(), &method_type)?;
                     let mut n_frame = new_frame;
                     let ret = n_frame.exec()?;
                     match ret {
@@ -766,18 +768,17 @@ impl Frame {
                 0xB2 /*getstatic*/ => {
                     let idx = self.get_u16();
                     let (class_name, (field_name, field_type)) = self.find_method_or_field(idx)?;
-                    let class_name_ref = &class_name;
-                    println!("Finding {}:{}({})", class_name, field_name, field_type);
-                    let instance = self.vm.new_object(class_name_ref);
-                    let new_object = self.vm.objects.borrow()
-                        .get(instance)
-                        .ok_or("Couldn't find the object I just created")?.clone();
-                    println!("These are the fields objects: {:?} {:?}", new_object, new_object.fields.borrow());
-                    let new_field = new_object.fields.borrow()
-                        .get(&field_name)
-                        .ok_or(format!("Non-existing field, field={}", field_name))?.clone();
+                    let new_field = self.class.static_fields.get(&field_name).ok_or(format!("Non-existing field, field={}, all_fields={:#?}", field_name, &self.class.static_fields.keys()))?.clone();
                     self.stack.push_front(new_field);
                 }
+                0xB3 /* putstatic */ =>
+                    {
+                        let idx = self.get_u16();
+                        let (class_name, (method_name, method_type)) = self.find_method_or_field(idx)?;
+                        let field_val = self.stack.pop_front().ok_or("Empty stack when getting field value")?;
+                        dbg!("Putting field={} into={},val={}", &method_name, class_name, &field_val);
+                        self.class.static_fields.insert(method_name, field_val);
+                    }
                 0xB4 | 0xB5 | 0xB6 | 0xB7 | 0xB8 /* getfield, putfield, invokeVirtual, invokeSpecial, invokeStatic */ => {
                     let idx = self.get_u16();
                     let (class_name, (method_name, method_type)) = self.find_method_or_field(idx)?;
@@ -794,14 +795,13 @@ impl Frame {
                             let class_ref = self.stack.pop_front().ok_or("Empty stack when getting field")?;
                             match class_ref {
                                 LocalVariable::Reference(ref_kind) => {
-                                    if let ReferenceKind::ObjectReference(obj_ref) = ref_kind {
-                                        let obj_ref = self.vm.objects
-                                            .borrow()
+                                    if let ObjectReference(obj_ref) = ref_kind {
+                                        let obj_ref = &self.vm.objects
                                             .get(obj_ref as usize)
                                             .ok_or("Class did not exist")?.clone();
                                         let field_val = self.vm.find_field(&obj_ref, &method_name, &method_type)?;
-                                        println!("This is what I found: {}:{:?} out of {:?}:{:?} {:?}", &method_name, &field_val, &ref_kind, &obj_ref, obj_ref.fields.borrow());
-                                        self.stack.push_front(field_val);
+                                        println!("method_name:{}:field_val:{:?} from ref_kind:{:?}:obj_ref:{:?} {:?}", &method_name, &field_val, &ref_kind, &obj_ref, obj_ref.fields);
+                                        self.stack.push_front(LocalVariable::Reference(ref_kind));
                                         Ok(())
                                     } else {
                                         Err(format!("Unexpected type {:?}", ref_kind))
@@ -818,7 +818,6 @@ impl Frame {
                                     if let ReferenceKind::ObjectReference(obj_ref) = obj_ref {
                                         println!("Inserted {}{:?} into {:?}", &method_name, &field_val, obj_ref);
                                         self.vm.objects
-                                            .borrow()
                                             .get(obj_ref)
                                             .ok_or("Object did not exist")?.borrow_mut()
                                             .put_field(&method_name, field_val);
@@ -835,7 +834,7 @@ impl Frame {
                                 new_stack.push(self.stack.pop_front().ok_or(format!("Empty stack when calling new method, {} {} {}", method_name, method_type, ret))?);
                             }
                             new_stack.reverse();
-                            let ret = Frame::new(&self.vm, &class, &method_name, new_stack.clone(), &method_type)?.exec()?;
+                            let ret = Frame::new(self.vm, class.clone(), &method_name, new_stack.clone(), &method_type)?.exec()?;
 
                             match ret {
                                 LocalVariable::Void() => {}
@@ -854,7 +853,7 @@ impl Frame {
                                 println!("This is another class name - {} -> {}", class_name_ref, &self.class.name);
                                 let this_ref = &new_stack[0];
                                 if let LocalVariable::Reference(ObjectReference(this_idx)) = this_ref {
-                                    let this_instance = &self.vm.objects.borrow().get(*this_idx).unwrap().clone();
+                                    let this_instance = &self.vm.objects.get(*this_idx).unwrap().clone();
                                     if this_instance.get_super_instance().is_none()
                                     {
                                         let super_instance_idx = self.vm.new_object(class_name_ref);
@@ -867,7 +866,7 @@ impl Frame {
                                 }
                                 //new_stack[0] = ;
                             }
-                            let ret = Frame::new(&self.vm, &class, &method_name, new_stack.clone(), &method_type)?.exec()?;
+                            let ret = Frame::new(self.vm, class.clone(), &method_name, new_stack.clone(), &method_type)?.exec()?;
 
                             match ret {
                                 LocalVariable::Void() => {}
@@ -882,7 +881,7 @@ impl Frame {
                             }
 
                             new_stack.reverse();
-                            let new_frame = Frame::new(&self.vm, &class, &method_name, new_stack.clone(), &method_type)?;
+                            let new_frame = Frame::new(self.vm, class.clone(), &method_name, new_stack.clone(), &method_type)?;
                             let mut n_frame = new_frame;
                             let ret = n_frame.exec()?;
                             match ret {
@@ -945,11 +944,11 @@ impl Frame {
                         panic!("Wtf {:?}", count_var)
                     }
                 }
-                0xBE /*arraylenght */ => {
+                0xBE /*arraylength */ => {
                     let array_ref = self.stack.pop_front().ok_or("No array ref")?;
                     if let LocalVariable::Reference(ReferenceKind::ArrayReference(idx)) = array_ref {
-                        if let Some(arr) = self.vm.arrays.borrow().get(idx) {
-                            self.stack.push_front(LocalVariable::Int(arr.borrow().len() as i32));
+                        if let Some(arr) = self.vm.arrays.get(idx) {
+                            self.stack.push_front(LocalVariable::Int(arr.len() as i32));
                         }
                     }
                     if let LocalVariable::Reference(ReferenceKind::Null()) = array_ref {
@@ -961,7 +960,7 @@ impl Frame {
                     let array_ref = self.stack.pop_front().ok_or("No array_ref")?;
                     if let LocalVariable::Int(idx) = index_var {
                         if let LocalVariable::Reference(ReferenceKind::ArrayReference(arr_idx)) = array_ref {
-                            let item = self.vm.arrays.borrow()[arr_idx].borrow()[idx as usize].clone();
+                            let item = self.vm.arrays[arr_idx][idx as usize].clone();
                             match item {
                                 LocalVariable::Reference(_) => {
                                     if op == 0x32 {
@@ -1000,7 +999,7 @@ impl Frame {
                             }?;
                             Ok(())
                         } else {
-                            Err("Couldn't find an array")
+                            Err(format!("Couldn't find an array, {:?}", array_ref))
                         }?
                     }
                 }
@@ -1081,20 +1080,20 @@ mod tests {
     use std::collections::VecDeque;
 
     use crate::enums::LocalVariable;
-    use crate::frame::{execute_add, execute_iload_n, execute_load_const, execute_sub, Stack};
+    use crate::frame::{execute_add, execute_iload_n, execute_load_integer_const, execute_sub, Stack};
 
     #[test]
     fn load_constants() {
         let mut stack = VecDeque::<LocalVariable>::new();
-        execute_load_const(0x2, &mut stack);
+        execute_load_integer_const(0x2, &mut stack);
         assert!(!stack.is_empty());
         assert_eq!(1, stack.len());
         assert_eq!(LocalVariable::Int(-1), stack.pop_front().unwrap());
-        execute_load_const(0x2, &mut stack);
-        execute_load_const(0x3, &mut stack);
-        execute_load_const(0x4, &mut stack);
-        execute_load_const(0x5, &mut stack);
-        execute_load_const(0x6, &mut stack);
+        execute_load_integer_const(0x2, &mut stack);
+        execute_load_integer_const(0x3, &mut stack);
+        execute_load_integer_const(0x4, &mut stack);
+        execute_load_integer_const(0x5, &mut stack);
+        execute_load_integer_const(0x6, &mut stack);
         assert!(!stack.is_empty());
         assert_eq!(5, stack.len());
         for number in &[3, 2, 1, 0]

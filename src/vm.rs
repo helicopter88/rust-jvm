@@ -11,20 +11,15 @@ use crate::enums::ConstantPool::Empty;
 use crate::frame::Frame;
 use crate::enums::ReferenceKind::{ObjectReference, ClassReference, Null, ArrayReference};
 use std::borrow::Borrow;
-use std::thread;
-use std::future::Future;
-use futures::executor::block_on;
-use std::sync::{Arc, Mutex};
-use futures::TryFutureExt;
 
 pub struct VM
 {
     classpath: PathBuf,
-    classes: Rc<RefCell<HashMap<String, Rc<Class>>>>,
-    pub(crate) objects: RefCell<Vec<Rc<Object>>>,
-    pub(crate) native_methods: HashMap<String, Rc<dyn Fn(&Class, &Frame, &[LocalVariable]) -> Result<LocalVariable, String>>>,
+    classes: Box<HashMap<String, Rc<Class>>>,
+    pub(crate) objects: Box<Vec<Rc<Object>>>,
+    pub(crate) native_methods: HashMap<String, Rc<dyn Fn(&Class, &mut Frame, &[LocalVariable]) -> Result<LocalVariable, String>>>,
     pub(crate) native_fields: HashMap<String, LocalVariable>,
-    pub(crate) arrays: RefCell<Vec<RefCell<Vec<LocalVariable>>>>,
+    pub(crate) arrays: Box<Vec<Box<Vec<LocalVariable>>>>,
     cl: DeferredClassLoader,
 }
 
@@ -37,7 +32,7 @@ pub(crate) struct FileReader
 struct DeferredClassLoader
 {
     classpath: PathBuf,
-    classes: Arc<Mutex<HashMap<String, Rc<Class>>>>,
+    classes: Box<HashMap<String, Rc<Class>>>
 }
 
 impl FileReader {
@@ -285,18 +280,18 @@ impl FileReader {
 
 impl VM
 {
-    pub fn new(file_name: &str, class_path: &str) -> Result<Rc<VM>, String>
+    pub fn new(file_name: &str, class_path: &str) -> Result<VM, String>
     {
         let classpath = Path::new(class_path);
 
         let main_class = FileReader::read_class_from_file(file_name)?;
 
         let mut ret = Self {
-            classes: Rc::new(RefCell::new(HashMap::new())),
-            objects: RefCell::new(vec![]),
+            classes: Box::new(HashMap::new()),
+            objects: Box::new(vec![]),
             native_methods: (HashMap::new()),
             classpath: classpath.to_path_buf(),
-            arrays: RefCell::new(vec![]),
+            arrays: Box::new(vec![]),
             cl: DeferredClassLoader::new(classpath.to_path_buf()),
             native_fields: Default::default(),
         };
@@ -306,9 +301,9 @@ impl VM
             if let LocalVariable::Reference(ObjectReference(idx)) = variables[0]
             {
                 let objects = frame.vm.objects.clone();
-                let obj = objects.borrow().get(idx).clone().unwrap().class.name.to_string();
+                let obj = objects.get(idx).unwrap().class.name.to_string();
 
-                return Ok(LocalVariable::Reference(ReferenceKind::ClassReference(obj)));
+                return Ok(LocalVariable::Reference(ClassReference(obj)));
             } else {
                 panic!("Wtf")
             }
@@ -326,8 +321,8 @@ impl VM
                 let obj = frame.vm.new_object("java/lang/String");
                 let string_class = frame.vm.get_class("java/lang/String").unwrap();
                 let array = frame.vm.new_string(&idx);
-                let res = Frame::new(&frame.vm, &string_class, "<init>",
-                                     [LocalVariable::Reference(ReferenceKind::ObjectReference(obj)), LocalVariable::Reference(ReferenceKind::ArrayReference(array))].to_vec()
+                let res = Frame::new(frame.vm, string_class, "<init>",
+                                     [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ReferenceKind::ArrayReference(array))].to_vec()
                                      , "([C)V")?.exec();
                 println!("getName returned {:?}", res);
                 if res.is_err()
@@ -348,18 +343,18 @@ impl VM
             {
                 if let LocalVariable::Reference(ArrayReference(dst_ref)) = dst
                 {
-                    let borrowed_arrays = frame.vm.arrays.borrow().clone();
+                    let borrowed_arrays = &frame.vm.arrays;
                     let src_arr = borrowed_arrays.get(src_ref).ok_or("Source did not exist")?.clone();
                     let dst_arr = borrowed_arrays.get(dst_ref).ok_or("Destination did not exist")?.clone();
 
                     let mut count = end as usize;
-                    for item in src_arr.into_inner()
+                    for item in *src_arr
                     {
                         if count == len - 1
                         {
                             break;
                         }
-                        dst_arr.borrow_mut()[end + count] = item;
+                        dst_arr[end + count] = item;
                         count += 1;
                     }
                 } else {
@@ -382,7 +377,7 @@ impl VM
                 let arr_idx = frame.vm.new_array(12, 0);
                 Ok(LocalVariable::Reference(ArrayReference(arr_idx)))
             }));
-        Ok(Rc::new(ret))
+        Ok(ret)
     }
 
     pub(crate) fn make_native_method_name(class_name: &str, method_name: &str) -> String
@@ -399,7 +394,7 @@ impl VM
         return &t[1..t.len() - 1];
     }
 
-    fn default_initialiser(&self, descriptor: &str, is_final: bool) -> LocalVariable
+    fn default_initialiser(&mut self, descriptor: &str, is_final: bool) -> LocalVariable
     {
         match descriptor.chars().nth(0).unwrap() {
             'B' => {
@@ -422,7 +417,7 @@ impl VM
             }
             'L' => {
                 if is_final {
-                    LocalVariable::Reference(ReferenceKind::ObjectReference(self.new_object(VM::type_to_class(descriptor))))
+                    LocalVariable::Reference(ObjectReference(self.new_object(VM::type_to_class(descriptor))))
                 } else {
                     LocalVariable::Reference(Null())
                 }
@@ -432,7 +427,7 @@ impl VM
             }
             '[' =>
                 {
-                    LocalVariable::Reference(ReferenceKind::Null())
+                    LocalVariable::Reference(Null())
                 }
             _ => {
                 panic!("descriptor {}", descriptor);
@@ -440,7 +435,7 @@ impl VM
         }
     }
 
-    pub(crate) fn new_object(&self, class_name: &str) -> usize
+    pub(crate) fn new_object(&mut self, class_name: &str) -> usize
     {
         let class = &self.get_class(&class_name).unwrap();
         let mut fields = HashMap::new();
@@ -472,17 +467,17 @@ impl VM
                 fields.insert(field.name.clone(), self.default_initialiser(&field.descriptor, false));
             }
         }
-        self.objects.borrow_mut().push(Rc::new(Object {
+        self.objects.push(Rc::new(Object {
             class: class.clone(),
-            super_instance: RefCell::new(None),
-            fields: RefCell::new(fields),
+            super_instance: Box::new(None),
+            fields: Box::new(fields),
         }));
-        self.objects.borrow().len() - 1
+        self.objects.len() - 1
     }
 
     pub(crate) fn set_array_element(&self, array: usize, idx: usize, elem: LocalVariable) {
-        println!("The array is {:?}", self.arrays.borrow()[array]);
-        self.arrays.borrow_mut()[array].borrow_mut()[idx] = elem;
+        println!("The array is {:?}", self.arrays[array]);
+        self.arrays[array][idx] = elem;
     }
 
     pub(crate) fn new_string(&self, string: &str) -> usize {
@@ -490,11 +485,11 @@ impl VM
         println!("Creating new string array, idx={} for str={}", array, string);
         for (idx, char) in string.chars().enumerate()
         {
-            self.arrays.borrow_mut()[array].borrow_mut()[idx] = LocalVariable::Char(char)
+            self.arrays[array][idx] = LocalVariable::Char(char)
         }
         array
     }
-    pub(crate) fn new_array(&self, arr_type: u8, count: usize) -> usize {
+    pub(crate) fn new_array(&mut self, arr_type: u8, count: usize) -> usize {
         let arr_initaliser = match arr_type {
             4 => {
                 LocalVariable::Boolean(false)
@@ -526,9 +521,9 @@ impl VM
             _ => { panic!("no"); }
         };
         let arr = vec![arr_initaliser; count + 1];
-        println!("Initialising array, idx={}, type={}, count={}", self.arrays.borrow().len(), arr_type, &arr.len());
-        self.arrays.borrow_mut().push(RefCell::new(arr));
-        return self.arrays.borrow().len() - 1;
+        println!("Initialising array, idx={}, type={}, count={}", self.arrays.len(), arr_type, &arr.len());
+        self.arrays.push(Box::new(arr));
+        return self.arrays.len() - 1;
     }
 
     pub(crate) fn get_class_impl(&self, class_name: &str) -> Option<Rc<Class>>
@@ -553,10 +548,10 @@ impl VM
         None
     }
 
-    pub(crate) fn find_field(self: &Self, obj_ref: &Rc<Object>, method_name: &str, method_type: &str) -> Result<LocalVariable, String>
+    pub(crate) fn find_field(self: &mut Self, obj_ref: &Rc<Object>, method_name: &str, method_type: &str) -> Result<LocalVariable, String>
     {
-        let field_ref = obj_ref.fields.borrow();
-        let field_val = field_ref.get(method_name).cloned();
+        let field_ref = &obj_ref.fields;
+        let field_val = &field_ref.get(method_name);
         if field_val.is_some()
         {
             return Ok(field_val.unwrap().clone());
@@ -565,23 +560,23 @@ impl VM
         {
             return Ok(t.clone());
         }
-        let super_instance = obj_ref.super_instance.borrow().clone();
+        let super_instance = obj_ref.super_instance.clone();
         if super_instance.is_none()
         {
             return Err(format!("Field {}({}) not found in {:?}", method_name, method_type, obj_ref));
         }
-        let obj_map_ref = self.objects.borrow();
+        let obj_map_ref = self.objects;
         let super_instance_ref = obj_map_ref.get(super_instance.unwrap()).ok_or(format!("Null pointer exception with superclass {}", super_instance.unwrap()))?;
         return dbg!(self.find_field(super_instance_ref, method_name, method_type));
     }
-    pub(crate) fn get_class(&self, class_name: &str) -> Option<Rc<Class>>
+    pub(crate) fn get_class(&mut self, class_name: &str) -> Option<Rc<Class>>
     {
         if class_name.is_empty()
         {
             return None;
         }
         dbg!("Loading class: ", class_name);
-        let maybe_class = block_on(self.cl.defer_load_class(class_name));
+        let maybe_class = self.cl.defer_load_class(class_name);
         if maybe_class.is_none()
         {
             return None;
@@ -589,22 +584,22 @@ impl VM
         let class = maybe_class.unwrap();
         let mut maybe_super_class = None;
 
-        maybe_super_class = block_on(self.cl.defer_load_class(&class.super_class));
+        maybe_super_class = self.cl.defer_load_class(&class.super_class);
 
         // TODO: static initialisers and class initialisers
         Some(class)
     }
 
 
-    pub fn start(vm: Rc<VM>, main_class: String)
+    pub fn start(vm: &mut VM, main_class: String)
     {
-        let class = block_on(vm.cl.defer_load_class(&main_class)).unwrap();
-        let init = Frame::new(&vm, &vm.get_class("java/lang/System").unwrap(), "initPhase1", vec![], "()V").unwrap().exec();
+        let class = vm.cl.defer_load_class(&main_class).unwrap();
+        let init = Frame::new(vm, vm.get_class("java/lang/System").unwrap(), "initPhase1", vec![], "()V").unwrap().exec();
         if let Err(msg) = init {
             panic!(msg);
         }
 
-        let frame = Frame::new(&vm, &class, "main", vec![], "([Ljava/lang/String;)V");
+        let frame = Frame::new(vm, class, "main", vec![], "([Ljava/lang/String;)V");
 
         match frame.unwrap().exec() {
             Ok(res) => { println!("Result of {}: {:#?}", &class.name, res); }
@@ -641,9 +636,9 @@ impl DeferredClassLoader {
         None
     }
 
-    pub(crate) async fn defer_load_class(&self, class_name: &str) -> Option<Rc<Class>>
+    pub(crate) fn defer_load_class(&mut self, class_name: &str) -> Option<Rc<Class>>
     {
-        if let Some(class) = self.classes.lock().unwrap().get(class_name)
+        if let Some(class) = self.classes.get(class_name)
         {
             println!("Class was loaded {}", class_name);
             return Some(class.clone());
@@ -651,13 +646,13 @@ impl DeferredClassLoader {
         let loaded_class = DeferredClassLoader::get_class_impl(&self.classpath, class_name).clone();
         if let Some(class) = loaded_class {
             {
-                self.classes.lock().unwrap().insert(class_name.into(), class.clone());
+                self.classes.insert(class_name.into(), class.clone());
             }
-            let map = self.classes.clone().clone();
+            let mut map = &self.classes;
             let super_class = class.clone().super_class.clone();
             let super_loaded = DeferredClassLoader::get_class_impl(&self.classpath, super_class.as_str());
             if let Some(s) = super_loaded {
-                map.lock().unwrap().insert(super_class, s.clone());
+                map.insert(super_class, s.clone());
             }
             ;
             return Some(class);
@@ -665,8 +660,8 @@ impl DeferredClassLoader {
         None
     }
 
-    pub(crate) fn insert_class(&self, class_name: &str, class: Rc<Class>)
+    pub(crate) fn insert_class(&mut self, class_name: &str, class: Rc<Class>)
     {
-        self.classes.lock().unwrap().insert(class_name.into(), class.clone());
+        self.classes.insert(class_name.into(), class.clone());
     }
 }
