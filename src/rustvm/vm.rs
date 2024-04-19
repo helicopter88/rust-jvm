@@ -588,7 +588,10 @@ impl VM
         {
             let frame = frame_stack.front_mut().unwrap();
             if let Some(to_be_put) = &maybe_result {
-                frame.stack.push_front(to_be_put.clone());
+                match to_be_put {
+                    LocalVariable::Void() => { }
+                    it => { frame.stack.push_front(it.clone()) }
+                }
                 maybe_result = None;
             }
             let result = match frame.will_execute_native_method {

@@ -480,6 +480,7 @@ impl Frame {
                     }
                     new_stack.reverse();
                     let new_frame = Frame::new(class.clone(), &method_name, new_stack.clone(), &method_type, vm)?;
+                    self.ip += 1;
                     return Ok(ExecutionResult::Invoke(new_frame));
                 }
                 0xB2 /*getstatic*/ => {
@@ -546,6 +547,7 @@ impl Frame {
                             }
                             new_stack.reverse();
                             let ret = Frame::new(class, &method_name, new_stack.clone(), &method_type, vm)?;
+                            self.ip += 1;
                             return Ok(ExecutionResult::Invoke(ret));
                         }
                         0xB7 /* invokeSpecial */ => {
@@ -567,6 +569,7 @@ impl Frame {
                                 }?
                             }
                             let ret = Frame::new(class, &method_name, new_stack, &method_type, vm)?;
+                            self.ip += 1;
                             return Ok(ExecutionResult::Invoke(ret));
                         }
                         0xB8 /* invokeStatic */ => {
@@ -576,6 +579,7 @@ impl Frame {
 
                             new_stack.reverse();
                             let new_frame = Frame::new(class, &method_name, new_stack, &method_type, vm)?;
+                            self.ip += 1;
                             return Ok(ExecutionResult::Invoke(new_frame));
                         }
                         _ => {}
