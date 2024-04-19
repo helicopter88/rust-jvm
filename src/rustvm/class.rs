@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use core::fmt;
+use anyhow::anyhow;
 use crate::rustvm::enums::{Attribute, ConstantPool, Field, LocalVariable, Flags};
 
 #[derive(Debug, Clone)]
@@ -34,11 +35,11 @@ impl Object {
         dbg!("PUT FIELD", &self.fields);
     }
 
-    pub(crate) fn put_super_instance(&mut self, super_idx: usize) -> Result<(), String>
+    pub(crate) fn put_super_instance(&mut self, super_idx: usize) -> Result<(), anyhow::Error>
     {
-        if (self.super_instance.is_some())
+        if self.super_instance.is_some()
         {
-            return Err(String::from("Multiple inheritance hasn't been implemented"));
+            return Err(anyhow!("Multiple inheritance hasn't been implemented"));
         }
         self.super_instance = Box::from(Some(super_idx));
         Ok(())
@@ -93,7 +94,7 @@ impl Class {
     }
 
 
-    pub(crate) fn resolve_method_handle_ref(&self, idx: u16) -> Result<(String, (String, String)), String>
+    pub(crate) fn resolve_method_handle_ref(&self, idx: u16) -> Result<(String, (String, String)), anyhow::Error>
     {
         let cp = &self.constant_pool;
 
@@ -103,21 +104,21 @@ impl Class {
                 let reference = *reference_ as usize;
                 match kind {
                     1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 => {
-                        match cp.get(reference).ok_or(format!("Pointed to non existing thing: {}", reference).to_string())? {
+                        match cp.get(reference).ok_or(anyhow!("Pointed to non existing thing: {}", reference))? {
                             ConstantPool::FieldRef(class_idx, nat) | ConstantPool::MethodRef(class_idx, nat) | ConstantPool::InterfaceMethodRef(class_idx, nat) => {
                                 Ok((self.resolve_string(*class_idx as usize), self.find_name_and_type(*nat)?))
                             }
-                            d => { Err(format!("Unexpected field {:?} for kind: {}", d, kind).to_string()) }
+                            d => { Err(anyhow!("Unexpected field {:?} for kind: {}", d, kind)) }
                         }
                     }
-                    _ => { Err(format!("Unexpected kind: {}", kind).to_string()) }
+                    _ => { Err(anyhow!("Unexpected kind: {}", kind)) }
                 }
             }
-            def => { Err(format!("Expected MethodHandle, got {:#?}", def).to_string()) }
+            def => { Err(anyhow!("Expected MethodHandle, got {:#?}", def)) }
         }
     }
 
-    pub(crate) fn find_method_or_field(&self, idx: u16) -> Result<(String, (String, String)), String>
+    pub(crate) fn find_method_or_field(&self, idx: u16) -> Result<(String, (String, String)), anyhow::Error>
     {
         let cp = &self.constant_pool;
 
@@ -131,11 +132,11 @@ impl Class {
                 Ok((self.resolve_string(*class_idx as usize),
                     self.find_name_and_type(*method_idx)?))
             }
-            def => Err(format!("Found {:#?} which is not a method or field", def))
+            def => Err(anyhow!("Found {:#?} which is not a method or field", def))
         }
     }
 
-    fn find_name_and_type(&self, idx: u16) -> Result<(String, String), String>
+    fn find_name_and_type(&self, idx: u16) -> Result<(String, String), anyhow::Error>
     {
         let cp = &self.constant_pool;
 
@@ -145,10 +146,10 @@ impl Class {
                 Ok((self.resolve_string(*name_idx as usize),
                     self.resolve_string(*type_idx as usize)))
             }
-            def => Err(format!("Found {:#?} which is not a NaT", def))
+            def => Err(anyhow!("Found {:#?} which is not a NaT", def))
         }
     }
-    pub(crate) fn find_invoke_dynamic(&self, idx: u16) -> Result<(u16, (String, String)), String>
+    pub(crate) fn find_invoke_dynamic(&self, idx: u16) -> Result<(u16, (String, String)), anyhow::Error>
     {
         let cp = &self.constant_pool;
 
@@ -162,18 +163,18 @@ impl Class {
                 Ok((*method_attr,
                     self.find_name_and_type(*name_and_type)?))
             }
-            def => Err(format!("Found {:#?} which is not a dynamic or invoke dynamic", def))
+            def => Err(anyhow!("Found {:#?} which is not a dynamic or invoke dynamic", def))
         }
     }
 
-    pub(crate) fn get_static_field(&self, idx: u16) -> Result<LocalVariable, String>
+    pub(crate) fn get_static_field(&self, idx: u16) -> Result<LocalVariable, anyhow::Error>
     {
         let (_, (field_name, _)) = self.find_method_or_field(idx)?;
-        let error_message = format!("Non-existing field, field={}, all_fields={:#?}", field_name, &self.static_fields.keys());
-        self.static_fields.get(&field_name).ok_or(error_message).clone().cloned()
+        let error_message = anyhow!("Non-existing field, field={}, all_fields={:#?}", field_name, &self.static_fields.keys());
+        self.static_fields.get(&field_name).ok_or(error_message).cloned()
     }
 
-    pub(crate) fn put_static_field(&mut self, idx: u16, field_val: LocalVariable) -> Result<(), String> {
+    pub(crate) fn put_static_field(&mut self, idx: u16, field_val: LocalVariable) -> Result<(), anyhow::Error> {
         let (class_name, (method_name, _method_type)) = self.find_method_or_field(idx)?;
         dbg!("Putting field={} into={},val={}", &method_name, class_name, &field_val);
         self.static_fields.insert(method_name, field_val);

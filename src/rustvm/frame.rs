@@ -1,6 +1,7 @@
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::ops::Neg;
+use anyhow::anyhow;
 
 use crate::rustvm::class::ClassRef;
 use crate::rustvm::enums::{BootstrapMethod, ConstantPool, Field, LocalVariable, ReferenceKind};
@@ -33,7 +34,7 @@ pub(crate) enum ExecutionResult
     Invoke(Frame)
 }
 
-fn parse_type(prototype: &str) -> Result<(usize, String), String>
+fn parse_type(prototype: &str) -> Result<(usize, String), anyhow::Error>
 {
     let mut ret_idx = 0;
     let mut in_class = false;
@@ -73,9 +74,9 @@ fn read_u16_from_vec(data: &Vec<u8>, starting_point: usize) -> u16 {
 }
 
 impl Frame {
-    pub fn new(class: ClassRef, method_name: &str, local_variables: Vec<LocalVariable>, method_type: &str, vm: &mut VM) -> Result<Frame, String>
+    pub fn new(class: ClassRef, method_name: &str, local_variables: Vec<LocalVariable>, method_type: &str, vm: &mut VM) -> Result<Frame, anyhow::Error>
     {
-        let exec_method = |f: &mut Frame, m: &Field| -> Result<(), String> {
+        let exec_method = |f: &mut Frame, m: &Field| -> Result<(), anyhow::Error> {
             for attrib in &m.attributes {
 
                 if attrib.name.as_str() == "Code" && attrib.data.len() > 8 {
@@ -92,9 +93,9 @@ impl Frame {
                     return Ok(());
                 }
             }
-            return Err(format!("Couldn't find code for method {}: {} ({:?}/{:?})", method_name, method_type, &m.attributes, &m.flags));
+            return Err(anyhow!("Couldn't find code for method {}: {} ({:?}/{:?})", method_name, method_type, &m.attributes, &m.flags));
         };
-        let borrowed_name = &(*class).borrow().name;
+        let borrowed_name = &class.name;
         println!("Will try to create a frame for {}::{}{} called with: {:?}", borrowed_name, method_name, method_type, local_variables);
         let mut f = Frame {
             ip: 0,
@@ -117,7 +118,7 @@ impl Frame {
             return Ok(f);
         }
 
-        for method in &(*class).borrow().methods
+        for method in &class.methods
         {
             println!("Candidate method: '{}' -> '{}' - I am looking for '{}' -> '{}'", method.name, method.descriptor, method_name, method_type);
             if method.name.eq(method_name) && method.descriptor.eq(method_type) {
@@ -126,13 +127,13 @@ impl Frame {
             }
         }
 
-        let maybe_super_class = vm.get_class(&(*class).borrow().super_class);
+        let maybe_super_class = vm.get_class(&class.super_class);
         if let Some(super_class) = maybe_super_class
         {
             return Frame::new(super_class.clone(), method_name, local_variables, method_type, vm);
         }
 
-        for attrib in &(*class).borrow().attributes {
+        for attrib in &class.attributes {
             if attrib.name.as_str() == "BootstrapMethods" {
                 let num_bootstraps = read_u16_from_vec(attrib.data.borrow(), 0);
 
@@ -157,7 +158,7 @@ impl Frame {
         }
 
 
-        Err(format!("Method not found: {} {}", method_name, method_type))
+        Err(anyhow!("Method not found: {} {}", method_name, method_type))
     }
 
     pub fn get_u16(&mut self) -> u16
@@ -183,14 +184,14 @@ impl Frame {
         return idx;
     }
 
-    pub fn exec_native(&mut self, vm: &mut VM) -> Result<ExecutionResult, String>
+    pub fn exec_native(&mut self, vm: &mut VM) -> Result<ExecutionResult, anyhow::Error>
     {
         let class = self.class.clone();
         let locals = &self.locals.clone();
-        let method = vm.native_methods.get(&VM::make_native_method_name(&(*self.class).borrow().name, &self.method_name)).ok_or("This should never be possible")?.clone();
+        let method = vm.native_methods.get(&VM::make_native_method_name(&self.class.name, &self.method_name)).ok_or(anyhow::Error::msg("This should never be possible"))?.clone();
         return Ok(ExecutionResult::FunctionCallResult(method(class, self, locals, vm)?));
     }
-    pub fn exec(&mut self, vm: &mut VM) -> Result<ExecutionResult, String>
+    pub fn exec(&mut self, vm: &mut VM) -> Result<ExecutionResult, anyhow::Error>
     {
         loop {
             let curr_ip = self.ip;
@@ -216,7 +217,7 @@ impl Frame {
                         self.stack.push_front(value_var);
                         Ok(())
                     } else {
-                        Err(format!("Could not find local variable of the right type, idx={}, variable found={:?}", index, &value_var))
+                        Err(anyhow!("Could not find local variable of the right type, idx={}, variable found={:?}", index, &value_var))
                     }?;
                 }
                 0x17 /* fload */ => {
@@ -227,7 +228,7 @@ impl Frame {
                         self.stack.push_front(value_var);
                         Ok(())
                     } else {
-                        Err(format!("Could not find local variable of the right type, idx={}, variable found={:?}", index, &value_var))
+                        Err(anyhow!("Could not find local variable of the right type, idx={}, variable found={:?}", index, &value_var))
                     }?;
                 }
                 0x1A | 0x1B | 0x1C | 0x1D/* iload_<n> */ => {
@@ -245,7 +246,7 @@ impl Frame {
                         0x13 => { self.get_u16() as usize }
                         _ => { panic!("Can't happen"); }
                     };
-                    match &(*self.class).borrow().constant_pool.get(idx).ok_or(format!("Couldn't find item in cp at {}", idx))? {
+                    match &self.class.constant_pool.get(idx).ok_or(anyhow!("Couldn't find item in cp at {}", idx))? {
                         ConstantPool::Integer(num) => { self.stack.push_front(LocalVariable::Int(*num)); }
                         ConstantPool::Float(f) => { self.stack.push_front(LocalVariable::Float(*f)) }
                         ConstantPool::Long(num) => { self.stack.push_front(LocalVariable::Long(*num)); }
@@ -256,11 +257,11 @@ impl Frame {
                         ConstantPool::ClassIndex(idx) => {
                             self.stack.push_front(LocalVariable::Reference(ReferenceKind::ClassReference(self.class.resolve_string(*idx as usize))))
                         }
-                        def => return Err(format!("Unexpected item={:?}", def))
+                        def => return Err(anyhow::Error::msg(format!("Unexpected item={:?}", def)))
                     };
                 }
                 0x74 /* ineg */ => {
-                    let value_var = self.stack.pop_front().ok_or("Empty stack when finding value")?;
+                    let value_var = self.stack.pop_front().ok_or(anyhow!("Empty stack when finding value"))?;
                     if let LocalVariable::Int(i) = value_var
                     {
                         self.stack.push_front(LocalVariable::Int(i.neg()));
@@ -280,7 +281,7 @@ impl Frame {
                         self.locals[index] = LocalVariable::Int(i + constant);
                         Ok(())
                     } else {
-                        Err(format!("Variable={:?} at index={} could not be increased by constant={}", value_var, index, constant))
+                        Err(anyhow::Error::msg(format!("Variable={:?} at index={} could not be increased by constant={}", value_var, index, constant)))
                     }?
                 }
                 0x19 /* aload */ => {
@@ -305,7 +306,7 @@ impl Frame {
                 }
                 0x36 => {
                     let index = self.get_u8() as usize;
-                    let value_var = self.stack.pop_front().ok_or("Empty stack finding value")?;
+                    let value_var = self.stack.pop_front().ok_or(anyhow::Error::msg("Empty stack finding value"))?;
                     if let LocalVariable::Int(_) = value_var {
                         self.locals[index] = value_var;
                     }
@@ -315,7 +316,7 @@ impl Frame {
                 }
                 0x3a /* astore */ => {
                     let idx = self.get_u8();
-                    let obj_ref = self.stack.pop_front().ok_or("No value for astore")?;
+                    let obj_ref = self.stack.pop_front().ok_or(anyhow::Error::msg("No value for astore"))?;
                     self.locals[idx as usize] = obj_ref;
                 }
                 0x4b | 0x4c | 0x4d | 0x4e => {
@@ -328,8 +329,8 @@ impl Frame {
                     execute_sub(&mut self.stack)?
                 }
                 0x68 => {
-                    let a_var = self.stack.pop_front().ok_or("Empty stack finding a")?;
-                    let b_var = self.stack.pop_front().ok_or("Empty stack finding b")?;
+                    let a_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding a"))?;
+                    let b_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding b"))?;
                     if let LocalVariable::Int(a) = a_var {
                         if let LocalVariable::Int(b) = b_var {
                             self.stack.push_front(LocalVariable::Int(a * b))
@@ -337,89 +338,89 @@ impl Frame {
                     }
                 }
                 0x6c => {
-                    let a_var = self.stack.pop_front().ok_or("Empty stack finding a")?;
-                    let b_var = self.stack.pop_front().ok_or("Empty stack finding b")?;
+                    let a_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding a"))?;
+                    let b_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding b"))?;
                     if let LocalVariable::Int(a) = a_var {
                         if let LocalVariable::Int(b) = b_var {
                             self.stack.push_front(LocalVariable::Int(b / a))
                         }
                     } else {
-                        Err("Did not find integers for division")?
+                        Err(anyhow!("Did not find integers for division"))?
                     }
                 }
                 0x78 /* ishl */ => {
-                    let value_var = self.stack.pop_front().ok_or("Empty stack finding value")?;
-                    let shift_var = self.stack.pop_front().ok_or("Empty stack finding shift")?;
+                    let value_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding value"))?;
+                    let shift_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding shift"))?;
                     if let LocalVariable::Int(value) = value_var {
                         if let LocalVariable::Int(shift) = shift_var {
                             self.stack.push_front(LocalVariable::Int(value << shift));
                             Ok(())
                         } else {
-                            Err("ISHL Expected integer SHIFT")
+                            Err(anyhow!("ISHL Expected integer SHIFT"))
                         }?;
                         Ok(())
                     } else {
-                        Err("ISHL Expected Integer VALUE")
+                        Err(anyhow!("ISHL Expected Integer VALUE"))
                     }?
                 }
                 0x7a /* ishr */ => {
-                    let shift_var = self.stack.pop_front().ok_or("Empty stack finding shift")?.to_lv_int();
-                    let value_var = self.stack.pop_front().ok_or("Empty stack finding value")?.to_lv_int();
+                    let shift_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding shift"))?.to_lv_int();
+                    let value_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding value"))?.to_lv_int();
                     if let LocalVariable::Int(value) = value_var {
                         if let LocalVariable::Int(shift) = shift_var {
                             self.stack.push_front(LocalVariable::Int(value >> shift));
                             Ok(())
                         } else {
-                            Err("LSHR Expected integer SHIFT")
+                            Err(anyhow!("LSHR Expected integer SHIFT"))
                         }?;
                         Ok(())
                     } else {
-                        Err("LSHR Expected Integer SHIFT")
+                        Err(anyhow!("LSHR Expected Integer SHIFT"))
                     }?
                 }
                 0x7c /* iushr */ => {
-                    let shift_var = self.stack.pop_front().ok_or("Empty stack finding shift")?.to_lv_int();
-                    let value_var = self.stack.pop_front().ok_or("Empty stack finding value")?.to_lv_int();
+                    let shift_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding shift"))?.to_lv_int();
+                    let value_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding value"))?.to_lv_int();
                     if let LocalVariable::Int(value) = value_var {
                         if let LocalVariable::Int(shift) = shift_var {
                             self.stack.push_front(LocalVariable::Int(value >> shift));
                             Ok(())
                         } else {
-                            Err("LSHR Expected integer SHIFT")
+                            Err(anyhow!("LSHR Expected integer SHIFT"))
                         }?;
                         Ok(())
                     } else {
-                        Err("LSHR Expected Integer SHIFT")
+                        Err(anyhow!("LSHR Expected Integer SHIFT"))
                     }?
                 }
                 0x7d /* lushr */ => {
-                    let value_var = self.stack.pop_front().ok_or("Empty stack finding value")?;
-                    let shift_var = self.stack.pop_front().ok_or("Empty stack finding shift")?.to_lv_int();
+                    let value_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding value"))?;
+                    let shift_var = self.stack.pop_front().ok_or(anyhow!("Empty stack finding shift"))?.to_lv_int();
                     if let LocalVariable::Long(value) = value_var {
                         if let LocalVariable::Int(shift) = shift_var {
                             self.stack.push_front(LocalVariable::Long(value >> shift));
                             Ok(())
                         } else {
-                            Err("LUSHR Expected integer SHIFT")
+                            Err(anyhow!("LUSHR Expected integer SHIFT"))
                         }?;
                         Ok(())
                     } else {
-                        Err("LUSHR Expected Long VALUE")
+                        Err(anyhow!("LUSHR Expected Long VALUE"))
                     }?
                 }
                 0x82 /* ixor */ => {
-                    let value2 = self.stack.pop_front().ok_or("ixor Empty stack finding value")?;
-                    let value1 = self.stack.pop_front().ok_or("ixor Empty stack finding shift")?;
+                    let value2 = self.stack.pop_front().ok_or(anyhow!("ixor Empty stack finding value"))?;
+                    let value1 = self.stack.pop_front().ok_or(anyhow!("ixor Empty stack finding shift"))?;
                     if let LocalVariable::Int(v1) = value1 {
                         if let LocalVariable::Int(v2) = value2 {
                             self.stack.push_front(LocalVariable::Int(v1 ^ v2));
                             Ok(())
                         } else {
-                            Err("IXOR Expected integer VALUE2")
+                            Err(anyhow!("IXOR Expected integer VALUE2"))
                         }?;
                         Ok(())
                     } else {
-                        Err("IXOR Expected integer VALUE1")
+                        Err(anyhow!("IXOR Expected integer VALUE1"))
                     }?
                 }
                 0x91 | 0x92 | 0x93 | 0x85 | 0x86 | 0x87 /*iconv*/ => {
@@ -439,9 +440,9 @@ impl Frame {
                     }
                 }
                 0x95 | 0x96 => /*fcmpg, fcmpl*/{
-                    let value2 = self.stack.pop_front().ok_or("fcmp Could not find variable 2")?;
+                    let value2 = self.stack.pop_front().ok_or(anyhow!("fcmp Could not find variable 2"))?;
 
-                    let value1 = self.stack.pop_front().ok_or("fcmp Could not find variable 1")?;
+                    let value1 = self.stack.pop_front().ok_or(anyhow!("fcmp Could not find variable 1"))?;
                     if let LocalVariable::Float(var1) = value1 {
                         if let LocalVariable::Float(var2) = value2 {
                             if var1 > var2
@@ -455,27 +456,27 @@ impl Frame {
                             }
                             Ok(())
                         } else {
-                            Err(format!("Variable2 was not a float {:?}", value2))
+                            Err(anyhow!("Variable2 was not a float {:?}", value2))
                         }
                     } else {
-                        Err(format!("Variable1 was not a float {:?}", value1))
+                        Err(anyhow!("Variable1 was not a float {:?}", value1))
                     }?
                 }
                 0xba /*invokeVirtual */ => {
                     let idx = self.get_u16();
                     let _ = self.get_u16();
                     let (bootstrap_idx, (method_name, method_type)) = self.class.find_invoke_dynamic(idx)?;
-                    let method_handle = self.bootstrap_methods.get(bootstrap_idx as usize).ok_or("Non existing bootstrap method")?;
+                    let method_handle = self.bootstrap_methods.get(bootstrap_idx as usize).ok_or(anyhow!("Non existing bootstrap method"))?;
                     let method_ref = self.class.resolve_method_handle_ref(method_handle.method_ref)?;
 
                     let class_name_ref = &method_ref.0;
                     let mut new_stack = vec![];
                     let class = vm.get_class(class_name_ref)
-                        .ok_or(format!("Could not find class {:#?}", class_name_ref).to_string())?
+                        .ok_or(anyhow!("Could not find class {:#?}", class_name_ref))?
                         .clone();
                     let (argc, ret) = parse_type(&method_type)?;
                     for _ in 0..argc {
-                        new_stack.push(self.stack.pop_front().ok_or(format!("Empty stack when calling new method, {}", ret))?);
+                        new_stack.push(self.stack.pop_front().ok_or(anyhow!("Empty stack when calling new method, {}", ret))?);
                     }
                     new_stack.reverse();
                     let new_frame = Frame::new(class.clone(), &method_name, new_stack.clone(), &method_type, vm)?;
@@ -484,12 +485,12 @@ impl Frame {
                 0xB2 /*getstatic*/ => {
                     let idx = self.get_u16();
 
-                    self.stack.push_front((*self.class).borrow().get_static_field(idx)?);
+                    self.stack.push_front(self.class.get_static_field(idx)?);
                 }
                 0xB3 /* putstatic */ =>
                     {
                         let idx = self.get_u16();
-                        let field_val = self.stack.pop_front().ok_or("Empty stack when getting field value")?;
+                        let field_val = self.stack.pop_front().ok_or(anyhow!("Empty stack when getting field value"))?;
                         self.class.put_static_field(idx, field_val)?;
                     }
                 0xB4 | 0xB5 | 0xB6 | 0xB7 | 0xB8 /* getfield, putfield, invokeVirtual, invokeSpecial, invokeStatic */ => {
@@ -499,13 +500,13 @@ impl Frame {
                     let class_name_ref = &class_name;
                     let mut new_stack = vec![];
                     let class = vm.get_class(class_name_ref)
-                        .ok_or(format!("Could not find class {:#?}", class_name_ref).to_string())?
+                        .ok_or(anyhow!("Could not find class {:#?}", class_name_ref))?
                         .clone();
                     let (argc, ret) = parse_type(&method_type)?;
 
                     match op {
                         0xB4 => {
-                            let class_ref = self.stack.pop_front().ok_or("Empty stack when getting field")?;
+                            let class_ref = self.stack.pop_front().ok_or(anyhow!("Empty stack when getting field"))?;
                             match class_ref {
                                 LocalVariable::Reference(ref_kind) => {
                                     if let ObjectReference(obj_ref) = ref_kind {
@@ -513,35 +514,35 @@ impl Frame {
                                         self.stack.push_front(field_val);
                                         Ok(())
                                     } else {
-                                        Err(format!("Unexpected type {:?}", ref_kind))
+                                        Err(anyhow!("Unexpected type {:?}", ref_kind))
                                     }
                                 }
-                                _ => Err(format!("Unexpected type {:?}", class_ref))
+                                _ => Err(anyhow!("Unexpected type {:?}", class_ref))
                             }?
                         }
                         0xB5 => {
-                            let field_val = self.stack.pop_front().ok_or("Empty stack when retrieving field")?;
-                            let class_ref = self.stack.pop_front().ok_or("Empty stack when putting field")?;
+                            let field_val = self.stack.pop_front().ok_or(anyhow!("Empty stack when retrieving field"))?;
+                            let class_ref = self.stack.pop_front().ok_or(anyhow!("Empty stack when putting field"))?;
                             match class_ref {
                                 LocalVariable::Reference(obj_ref) => {
                                     if let ObjectReference(obj_ref) = obj_ref {
                                         println!("Inserted {}{:?} into {:?}", &method_name, &field_val, obj_ref);
                                         {
                                             vm.objects.get_mut(obj_ref)
-                                                .ok_or("Object did not exist")?
+                                                .ok_or(anyhow!("Object did not exist"))?
                                                 .put_field(&method_name, field_val);
                                         }
                                         Ok(())
                                     } else {
-                                        Err(format!("Unexpected type {:?}", obj_ref))
+                                        Err(anyhow!("Unexpected type {:?}", obj_ref))
                                     }
                                 }
-                                _ => Err(format!("Unexpected type {:?}", class_ref))
+                                _ => Err(anyhow!("Unexpected type {:?}", class_ref))
                             }?
                         }
                         0xB6 /* invokeVirtual */ => {
                             for _ in 0..=argc {
-                                new_stack.push(self.stack.pop_front().ok_or(format!("Empty stack when calling new method, {} {} {}", method_name, method_type, ret))?);
+                                new_stack.push(self.stack.pop_front().ok_or(anyhow!("Empty stack when calling new method, {} {} {}", method_name, method_type, ret))?);
                             }
                             new_stack.reverse();
                             let ret = Frame::new(class, &method_name, new_stack.clone(), &method_type, vm)?;
@@ -549,7 +550,7 @@ impl Frame {
                         }
                         0xB7 /* invokeSpecial */ => {
                             for _ in 0..=argc {
-                                new_stack.push(self.stack.pop_front().ok_or(format!("Empty stack when calling new method, {} {} {}", method_name, method_type, ret))?);
+                                new_stack.push(self.stack.pop_front().ok_or(anyhow!("Empty stack when calling new method, {} {} {}", method_name, method_type, ret))?);
                             }
                             new_stack.reverse();
                             if class_name_ref != &self.class.name
@@ -560,16 +561,17 @@ impl Frame {
                                     let super_class = vm.create_superclass(this_idx, class_name_ref)?;
                                     println!("New stack[0] was: {:?}->{:?}", &new_stack[0], super_class);
                                     new_stack[0] = super_class;
+                                    Ok(())
                                 } else {
-                                    panic!("Wtf")
-                                }
+                                    Err(anyhow!("Wrong type in the stack"))
+                                }?
                             }
                             let ret = Frame::new(class, &method_name, new_stack, &method_type, vm)?;
                             return Ok(ExecutionResult::Invoke(ret));
                         }
                         0xB8 /* invokeStatic */ => {
                             for _ in 1..=argc {
-                                new_stack.push(self.stack.pop_front().ok_or(format!("Empty stack when calling new method, argc={}, stack_size={}", argc, self.stack.len()))?);
+                                new_stack.push(self.stack.pop_front().ok_or(anyhow!("Empty stack when calling new method, argc={}, stack_size={}", argc, self.stack.len()))?);
                             }
 
                             new_stack.reverse();
@@ -581,18 +583,18 @@ impl Frame {
                 }
 
                 0x57 /* pop */ => {
-                    self.stack.pop_front().ok_or("Empty stack when popping")?;
+                    self.stack.pop_front().ok_or(anyhow!("Empty stack when popping"))?;
                 }
                 0x59 /* dup */ =>
                     {
                         let item = self.stack.pop_front()
-                            .ok_or("Empty stack when duplicating")?;
+                            .ok_or(anyhow!("Empty stack when duplicating"))?;
                         self.stack.push_front(item.clone());
                         self.stack.push_front(item.clone());
                     }
                 0xAC /* ireturn */ | 0xB0  /* areturn */ => {
                     let ret = self.stack.pop_front()
-                        .ok_or("Empty stack when returning")?;
+                        .ok_or(anyhow!("Empty stack when returning"))?;
                     return Ok(ExecutionResult::FunctionCallResult(ret));
                 }
                 0xB1 /* return */ => {
@@ -614,14 +616,14 @@ impl Frame {
                 }
                 0x37 /* lstore */ => {
                     let idx = self.get_u8();
-                    let store_var = self.stack.pop_front().ok_or("No variable to store")?;
+                    let store_var = self.stack.pop_front().ok_or(anyhow!("No variable to store"))?;
                     if let LocalVariable::Long(_count) = store_var {
                         self.locals[idx as usize] = store_var;
                     }
                 }
                 // Begin array area
                 0xBC /*newarray*/ => {
-                    let count_var = self.stack.pop_front().ok_or("No count for array")?;
+                    let count_var = self.stack.pop_front().ok_or(anyhow!("No count for array"))?;
                     if let LocalVariable::Int(count) = count_var {
                         let arr_type = self.get_u8();
                         self.stack.push_front(LocalVariable::Reference(ReferenceKind::ArrayReference(vm.new_array(arr_type, count as usize))))
@@ -630,7 +632,7 @@ impl Frame {
                     }
                 }
                 0xBE /*arraylength */ => {
-                    let array_ref = self.stack.pop_front().ok_or("No array ref")?;
+                    let array_ref = self.stack.pop_front().ok_or(anyhow!("No array ref"))?;
                     if let LocalVariable::Reference(ReferenceKind::ArrayReference(idx)) = array_ref {
                         if let Some(arr) = vm.arrays.get(idx) {
                             self.stack.push_front(LocalVariable::Int(arr.len() as i32));
@@ -641,8 +643,8 @@ impl Frame {
                     }
                 }
                 0x32 | 0x33 | 0x34 | 0x35 /* aaload, baload, caload, saload */ => {
-                    let index_var = self.stack.pop_front().ok_or("No index for array")?;
-                    let array_ref = self.stack.pop_front().ok_or("No array_ref")?;
+                    let index_var = self.stack.pop_front().ok_or(anyhow!("No index for array"))?;
+                    let array_ref = self.stack.pop_front().ok_or(anyhow!("No array_ref"))?;
                     if let LocalVariable::Int(idx) = index_var {
                         if let LocalVariable::Reference(ReferenceKind::ArrayReference(arr_idx)) = array_ref {
                             let item = vm.arrays[arr_idx][idx as usize].clone();
@@ -652,7 +654,7 @@ impl Frame {
                                         self.stack.push_front(item);
                                         Ok(())
                                     } else {
-                                        Err(format!("Unexpected op={:x} for ref load={:?}", op, &item))
+                                        Err(anyhow!("Unexpected op={:x} for ref load={:?}", op, &item))
                                     }
                                 }
                                 LocalVariable::Boolean(_) | LocalVariable::Byte(_) => {
@@ -660,7 +662,7 @@ impl Frame {
                                         self.stack.push_front(item.to_lv_int());
                                         Ok(())
                                     } else {
-                                        Err(format!("Unexpected op={:x} for boolean/byte load={:?}", op, &item))
+                                        Err(anyhow!("Unexpected op={:x} for boolean/byte load={:?}", op, &item))
                                     }
                                 }
                                 LocalVariable::Char(_) => {
@@ -668,7 +670,7 @@ impl Frame {
                                         self.stack.push_front(item.to_lv_int());
                                         Ok(())
                                     } else {
-                                        Err(format!("Unexpected op={:x} for char load={:?}", op, &item))
+                                        Err(anyhow!("Unexpected op={:x} for char load={:?}", op, &item))
                                     }
                                 }
 
@@ -677,79 +679,85 @@ impl Frame {
                                         self.stack.push_front(item.to_lv_int());
                                         Ok(())
                                     } else {
-                                        Err(format!("Unexpected op={:x} for short load={:?}", op, &item))
+                                        Err(anyhow!("Unexpected op={:x} for short load={:?}", op, &item))
                                     }
                                 }
-                                _ => { Err(format!("Unexpected item={:?} for load, currently implemented are baload, caload and saload", &item)) }
+                                _ => { Err(anyhow!("Unexpected item={:?} for load, currently implemented are baload, caload and saload", &item)) }
                             }?;
                             Ok(())
                         } else {
-                            Err(format!("Couldn't find an array, {:?}", array_ref))
+                            Err(anyhow!("Couldn't find an array, {:?}", array_ref))
                         }?
                     }
                 }
                 0x52 | 0x53 | 0x54 | 0x55 /* <d,a,b,c>astore */ => {
-                    let value_var = self.stack.pop_front().ok_or("No value for array")?;
-                    let index_var = self.stack.pop_front().ok_or("No index for array")?;
-                    let array_ref = self.stack.pop_front().ok_or("No array_ref")?;
+                    let value_var = self.stack.pop_front().ok_or(anyhow!("No value for array"))?;
+                    let index_var = self.stack.pop_front().ok_or(anyhow!("No index for array"))?;
+                    let array_ref = self.stack.pop_front().ok_or(anyhow!("No array_ref"))?;
 
                     let index: usize = match index_var {
                         LocalVariable::Int(index) => { Ok(index as usize) }
-                        _ => Err("Unexpected index")
+                        _ => Err(anyhow!("Unexpected index"))
                     }?;
 
                     let arr = match array_ref {
                         LocalVariable::Reference(ReferenceKind::ArrayReference(a)) => { Ok(a) }
-                        _ => Err("Unexpected array ref")
+                        _ => Err(anyhow!("Unexpected array ref"))
                     }?;
                     match op {
                         0x42 => {
                             let value = match value_var {
                                 LocalVariable::Double(value) => { Ok(value) }
-                                _ => Err("Unexpected value")
+                                _ => Err(anyhow!("Unexpected value"))
                             }?;
                             vm.set_array_element(arr, index, LocalVariable::Double(value));
+                            Ok(())
+
                         }
                         0x53 => {
                             let value = match value_var {
                                 LocalVariable::Reference(value) => { Ok(value) }
-                                _ => Err("Unexpected value")
+                                _ => Err(anyhow!("Unexpected value"))
                             }?;
                             vm.set_array_element(arr, index, LocalVariable::Reference(value));
+                            Ok(())
                         }
                         0x54 /* bastore */ => {
                             let value = match value_var {
                                 LocalVariable::Byte(value) => { Ok(value) }
                                 LocalVariable::Boolean(value) => { Ok(value as u8) }
-                                def => Err(format!("Unexpected value={:?}", def))
+                                def => Err(anyhow!("Unexpected value={:?}", def))
                             }?;
                             println!("Hello I am about to set {} to {}", index, value);
                             vm.set_array_element(arr, index, LocalVariable::Char(value as u8 as char));
+                            Ok(())
+
                         }
                         0x55 /* castore */ => {
                             let value = match value_var {
                                 LocalVariable::Int(value) => { Ok(value) }
-                                _ => Err("Unexpected value")
+                                _ => Err(anyhow!("Unexpected value"))
                             }?;
 
                             vm.set_array_element(arr, index, LocalVariable::Byte(value as u8));
+                            Ok(())
                         }
-                        _ => { panic!("Impossible"); }
-                    }
+                        _ => { Err(anyhow!("Impossible")) }
+                    }?
                 }
 
                 0xC2 /* monitorenter */ => {
-                    self.stack.pop_front().ok_or("Empty stack when popping")?;
+                    self.stack.pop_front().ok_or(anyhow!("Empty stack when popping"))?;
                     println!("Monitor entered");
                 }
                 0xc0 /* checkcast */ => {
                     let cp = self.get_u16();
-                    let thing = &(*self.class).borrow().constant_pool[cp as usize];
+                    let thing = &self.class.constant_pool[cp as usize];
                     if let ConstantPool::ClassIndex(_t) = thing {}
                     println!("Thing is {:?}", thing);
                 }
                 def => {
-                    return Err(format!("Couldn't execute {:x}-{}", def, def).to_string());
+                    return Err(anyhow!(format!("Couldn't execute {:x}-{}", def, def).to_string()));
                 }
             }
 

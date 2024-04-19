@@ -1,63 +1,64 @@
+use anyhow::anyhow;
 use crate::rustvm::enums::{Arithmetic, LocalVariable, ReferenceKind};
 pub(crate) use crate::rustvm::frame::Stack;
 
-pub(super) fn execute_iload_n(op: u8, locals: &Vec<LocalVariable>, stack: &mut Stack) -> Result<(), String>
+pub(super) fn execute_iload_n(op: u8, locals: &Vec<LocalVariable>, stack: &mut Stack) -> Result<(), anyhow::Error>
 {
     const ZEROTH_VARIABLE: u8 = 0x1A;
     let variable_to_load = op - ZEROTH_VARIABLE;
-    match locals.get(variable_to_load as usize).ok_or("Missing local")?.to_lv_int() {
+    match locals.get(variable_to_load as usize).ok_or(anyhow!("Missing local"))?.to_lv_int() {
         LocalVariable::Int(num) => {
             stack.push_front(LocalVariable::Int(num));
             Ok(())
         }
-        def => Err(format!("Wrong type for iload ({:x}), var_idx={} {:#?}", op, variable_to_load, def))
+        def => Err(anyhow!("Wrong type for iload ({:x}), var_idx={} {:#?}", op, variable_to_load, def))
     }
 }
 
-pub(crate) fn execute_lload_n(op: u8, locals: &Vec<LocalVariable>, stack: &mut Stack) -> Result<(), String>
+pub(crate) fn execute_lload_n(op: u8, locals: &Vec<LocalVariable>, stack: &mut Stack) -> Result<(), anyhow::Error>
 {
     const ZEROTH_VARIABLE: u8 = 0x1E;
     let variable_to_load = op - ZEROTH_VARIABLE;
-    match locals.get(variable_to_load as usize).ok_or("Missing local")? {
+    match locals.get(variable_to_load as usize).ok_or(anyhow!("Missing local"))? {
         LocalVariable::Long(num) => {
             stack.push_front(LocalVariable::Long(*num));
             Ok(())
         }
-        def => Err(format!("Wrong type for iload ({:x}), var_idx={} {:#?}", op, variable_to_load, def))
+        def => Err(anyhow!("Wrong type for iload ({:x}), var_idx={} {:#?}", op, variable_to_load, def))
     }
 }
 
-pub(crate) fn execute_fload_n(op: u8, locals: &Vec<LocalVariable>, stack: &mut Stack) -> Result<(), String>
+pub(crate) fn execute_fload_n(op: u8, locals: &Vec<LocalVariable>, stack: &mut Stack) -> Result<(), anyhow::Error>
 {
     const ZEROTH_VARIABLE: u8 = 0x22;
     let variable_to_load = op - ZEROTH_VARIABLE;
-    match locals.get(variable_to_load as usize).ok_or(format!("Missing local at idx, {}", variable_to_load))? {
+    match locals.get(variable_to_load as usize).ok_or(anyhow!("Missing local at idx, {}", variable_to_load))? {
         LocalVariable::Float(num) => {
             stack.push_front(LocalVariable::Float(*num));
             Ok(())
         }
-        def => Err(format!("Wrong type for fload ({:x}), var_idx={} {:#?}", op, variable_to_load, def))
+        def => Err(anyhow!("Wrong type for fload ({:x}), var_idx={} {:#?}", op, variable_to_load, def))
     }
 }
 
-pub(crate) fn execute_aload(op: u8, locals: &Vec<LocalVariable>, stack: &mut Stack) -> Result<(), String>
+pub(crate) fn execute_aload(op: u8, locals: &Vec<LocalVariable>, stack: &mut Stack) -> Result<(), anyhow::Error>
 {
     const ZEROTH_VARIABLE: u8 = 0x2A;
     let variable_to_load = op - ZEROTH_VARIABLE;
-    match locals.get(variable_to_load as usize).ok_or("Missing local")? {
+    match locals.get(variable_to_load as usize).ok_or(anyhow!("Missing local"))? {
         LocalVariable::Reference(addr) => {
             stack.push_front(LocalVariable::Reference(addr.clone()));
             Ok(())
         }
-        def => Err(format!("Wrong type for aload {:x} {:#?}", op, def))
+        def => Err(anyhow!("Wrong type for aload {:x} {:#?}", op, def))
     }
 }
 
-pub(crate) fn execute_astore(op: u8, locals: &mut Vec<LocalVariable>, stack: &mut Stack) -> Result<(), String>
+pub(crate) fn execute_astore(op: u8, locals: &mut Vec<LocalVariable>, stack: &mut Stack) -> Result<(), anyhow::Error>
 {
     const ZEROTH_VARIABLE: usize = 0x4B;
     let variable_to_store: usize = op as usize - ZEROTH_VARIABLE;
-    let item = stack.pop_front().ok_or("Empty stack")?;
+    let item = stack.pop_front().ok_or(anyhow!("Empty stack"))?;
     match item {
         LocalVariable::Reference(addr) => {
             locals[variable_to_store] = LocalVariable::Reference(addr);
@@ -67,21 +68,21 @@ pub(crate) fn execute_astore(op: u8, locals: &mut Vec<LocalVariable>, stack: &mu
             locals[variable_to_store] = LocalVariable::ReturnAddress(addr);
             Ok(())
         }
-        def => Err(format!("Wrong type for astore ({:x}) {:#?}", op, def))
+        def => Err(anyhow!("Wrong type for astore ({:x}) {:#?}", op, def))
     }
 }
 
-pub(crate) fn execute_istore(op: u8, locals: &mut Vec<LocalVariable>, stack: &mut Stack) -> Result<(), String>
+pub(crate) fn execute_istore(op: u8, locals: &mut Vec<LocalVariable>, stack: &mut Stack) -> Result<(), anyhow::Error>
 {
     const ZEROTH_VARIABLE: usize = 0x3B;
     let variable_to_store: usize = op as usize - ZEROTH_VARIABLE;
-    let item = stack.pop_front().ok_or("Empty stack")?;
+    let item = stack.pop_front().ok_or(anyhow!("Empty stack"))?;
     match item {
         LocalVariable::Int(addr) => {
             locals[variable_to_store] = LocalVariable::Int(addr);
             Ok(())
         }
-        def => Err(format!("Wrong type for istore ({:x}) {:#?}", op, def))
+        def => Err(anyhow!("Wrong type for istore ({:x}) {:#?}", op, def))
     }
 }
 
@@ -112,10 +113,10 @@ pub(crate) fn execute_load_double_const(op: u8, stack: &mut Stack)
     }
 }
 
-pub(super) fn execute_add(stack: &mut Stack) -> Result<(), String>
+pub(super) fn execute_add(stack: &mut Stack) -> Result<(), anyhow::Error>
 {
-    let b = stack.pop_front().ok_or("ADD Missing stack variable 1")?;
-    let a = stack.pop_front().ok_or("ADD Missing stack variable 2")?;
+    let b = stack.pop_front().ok_or(anyhow!("ADD Missing stack variable 1"))?;
+    let a = stack.pop_front().ok_or(anyhow!("ADD Missing stack variable 2"))?;
 
     stack.push_front(LocalVariable::sum(&a, &b)?);
 
@@ -123,33 +124,35 @@ pub(super) fn execute_add(stack: &mut Stack) -> Result<(), String>
 }
 
 
-pub(crate) fn execute_sub(stack: &mut Stack) -> Result<(), String>
+pub(crate) fn execute_sub(stack: &mut Stack) -> Result<(), anyhow::Error>
 {
-    let a = stack.pop_front().ok_or("SUB Missing stack variable 1")?;
-    let b = stack.pop_front().ok_or("SUB Missing stack variable 2")?;
+    let a = stack.pop_front().ok_or(anyhow!("SUB Missing stack variable 1"))?;
+    let b = stack.pop_front().ok_or(anyhow!("SUB Missing stack variable 2"))?;
 
     stack.push_front(LocalVariable::sub(&b, &a)?);
 
     Ok(())
 }
 
-pub(crate) fn execute_bitwise(op: u8, stack: &mut Stack) -> Result<(), String>
+pub(crate) fn execute_bitwise(op: u8, stack: &mut Stack) -> Result<(), anyhow::Error>
 {
-    let a = stack.pop_front().ok_or("SUB Missing stack variable 2")?;
-    let b = stack.pop_front().ok_or("SUB Missing stack variable 1")?;
+    let a = stack.pop_front().ok_or(anyhow!("SUB Missing stack variable 2"))?;
+    let b = stack.pop_front().ok_or(anyhow!("SUB Missing stack variable 1"))?;
     match op {
         0x7e => {
             stack.push_front(LocalVariable::and(&b, &a)?);
+            Ok(())
         }
         0x79 => {
             stack.push_front(LocalVariable::shl(&b, &a)?);
+            Ok(())
         }
-        _ => { panic!("Wtf, op={:x}", op) }
-    }
+        _ => { Err(anyhow!("Wtf, op={:x}", op)) }
+    }?;
     Ok(())
 }
 
-fn execute_if_internal(op: u8, a: LocalVariable, b: LocalVariable) -> Result<bool, String>
+fn execute_if_internal(op: u8, a: LocalVariable, b: LocalVariable) -> Result<bool, anyhow::Error>
 {
     println!("Comparing {:?} with {:?}->{}", a, b, b == a);
     match op {
@@ -159,22 +162,22 @@ fn execute_if_internal(op: u8, a: LocalVariable, b: LocalVariable) -> Result<boo
         0xa2 | 0x9c => { Ok(a >= b) }
         0xa3 | 0x9d => { Ok(a > b) }
         0xa4 | 0x9e => { Ok(a <= b) }
-        _ => Err(format!("Unexpected op {}", op))
+        _ => Err(anyhow!("Unexpected op {}", op))
     }
 }
 
-pub(crate) fn execute_if(op: u8, stack: &mut Stack) -> Result<bool, String> {
-    let a = stack.pop_front().ok_or("IF Missing stack variable 1")?;
+pub(crate) fn execute_if(op: u8, stack: &mut Stack) -> Result<bool, anyhow::Error> {
+    let a = stack.pop_front().ok_or(anyhow!("IF Missing stack variable 1"))?;
     if op >= 0x99 && op <= 0x9e {
         let zero = if let LocalVariable::Boolean(_) = a { LocalVariable::Boolean(false) } else { LocalVariable::Int(0) };
         return execute_if_internal(op, a, zero);
     }
-    let b = stack.pop_front().ok_or("IF Missing stack variable 2")?;
+    let b = stack.pop_front().ok_or(anyhow!("IF Missing stack variable 2"))?;
     return execute_if_internal(op, b, a);
 }
 
-pub(crate) fn execute_if_null(op: u8, stack: &mut Stack) -> Result<bool, String> {
-    let a = stack.pop_front().ok_or("IF-NULL Missing stack variable 1")?;
+pub(crate) fn execute_if_null(op: u8, stack: &mut Stack) -> Result<bool, anyhow::Error> {
+    let a = stack.pop_front().ok_or(anyhow!("IF-NULL Missing stack variable 1"))?;
     if let LocalVariable::Reference(addr) = a {
         match op {
             0xC6 => {
@@ -183,16 +186,16 @@ pub(crate) fn execute_if_null(op: u8, stack: &mut Stack) -> Result<bool, String>
             0xC7 => {
                 Ok(ReferenceKind::Null() != addr)
             }
-            _ => Err(format!("Unexpected op {}", op))
+            _ => Err(anyhow!("Unexpected op {}", op))
         }
     } else {
-        Err(format!("Wrong type {:?}", a))
+        Err(anyhow!("Wrong type {:?}", a))
     }
 }
 
 
-pub(crate) fn execute_iconv(op: u8, stack: &mut Stack) -> Result<(), String> {
-    let int = stack.pop_front().ok_or("Empty stack")?;
+pub(crate) fn execute_iconv(op: u8, stack: &mut Stack) -> Result<(), anyhow::Error> {
+    let int = stack.pop_front().ok_or(anyhow!("Empty stack"))?;
     stack.push_front(match int {
         LocalVariable::Int(num) => {
             match op {
@@ -202,10 +205,10 @@ pub(crate) fn execute_iconv(op: u8, stack: &mut Stack) -> Result<(), String> {
                 0x91 => { Ok(LocalVariable::Byte(num as u8)) }
                 0x92 => { Ok(LocalVariable::Char(num as u8 as char)) }
                 0x93 => { Ok(LocalVariable::Short(num as i16)) }
-                _ => Err(format!("Unexpected op, {:x}", op))
+                _ => Err(anyhow!("Unexpected op, {:x}", op))
             }
         }
-        _ => Err(format!("Expected Int, found {:?}", int))
+        _ => Err(anyhow!("Expected Int, found {:?}", int))
     }?);
     Ok(())
 }

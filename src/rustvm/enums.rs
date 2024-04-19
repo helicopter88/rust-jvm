@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fmt::{Debug, Formatter};
+use anyhow::anyhow;
 
 #[derive(Clone)]
 pub(crate) struct Attribute {
@@ -60,10 +61,10 @@ impl Field {
 
 pub trait Arithmetic<T>
 {
-    fn sum(a: &T, b: &T) -> Result<T, String>;
-    fn sub(a: &T, b: &T) -> Result<T, String>;
-    fn and(a: &T, b: &T) -> Result<T, String>;
-    fn shl(a: &T, b: &T) -> Result<T, String>;
+    fn sum(a: &T, b: &T) -> Result<T, anyhow::Error>;
+    fn sub(a: &T, b: &T) -> Result<T, anyhow::Error>;
+    fn and(a: &T, b: &T) -> Result<T, anyhow::Error>;
+    fn shl(a: &T, b: &T) -> Result<T, anyhow::Error>;
 }
 
 #[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Clone)]
@@ -164,7 +165,7 @@ impl BootstrapMethod {
 }
 
 impl Arithmetic<LocalVariable> for LocalVariable {
-    fn sum(a: &LocalVariable, b: &LocalVariable) -> Result<LocalVariable, String> {
+    fn sum(a: &LocalVariable, b: &LocalVariable) -> Result<LocalVariable, anyhow::Error> {
         match (a, b) {
             (LocalVariable::Int(num_a), LocalVariable::Int(num_b)) => {
                 Ok(LocalVariable::Int(num_a + num_b))
@@ -186,13 +187,13 @@ impl Arithmetic<LocalVariable> for LocalVariable {
                 match (&int_a, &int_b)
                 {
                     (LocalVariable::Int(_), LocalVariable::Int(_)) => { LocalVariable::sum(&int_a, &int_b) }
-                    _ => { Err(format!("SUM Mismatched types, {:?} {:?}", a, b).to_string()) }
+                    _ => { Err(anyhow!("SUM Mismatched types, {:?} {:?}", a, b)) }
                 }
             }
         }
     }
 
-    fn sub(a: &LocalVariable, b: &LocalVariable) -> Result<LocalVariable, String> {
+    fn sub(a: &LocalVariable, b: &LocalVariable) -> Result<LocalVariable, anyhow::Error> {
         match (a, b) {
             (LocalVariable::Int(num_a), LocalVariable::Int(num_b)) => {
                 Ok(LocalVariable::Int(num_a - num_b))
@@ -214,12 +215,12 @@ impl Arithmetic<LocalVariable> for LocalVariable {
                 match (&int_a, &int_b)
                 {
                     (LocalVariable::Int(_), LocalVariable::Int(_)) => { LocalVariable::sub(&int_a, &int_b) }
-                    _ => { Err(format!("SUM Mismatched types, {:?} {:?}", a, b).to_string()) }
+                    _ => { Err(anyhow!("SUM Mismatched types, {:?} {:?}", a, b)) }
                 }
             }
         }
     }
-    fn and(a: &LocalVariable, b: &LocalVariable) -> Result<LocalVariable, String> {
+    fn and(a: &LocalVariable, b: &LocalVariable) -> Result<LocalVariable, anyhow::Error> {
         match (a, b) {
             (LocalVariable::Int(num_a), LocalVariable::Int(num_b)) => {
                 Ok(LocalVariable::Int(num_a & num_b))
@@ -229,13 +230,13 @@ impl Arithmetic<LocalVariable> for LocalVariable {
                 match (&int_a, &int_b)
                 {
                     (LocalVariable::Int(_), LocalVariable::Int(_)) => { LocalVariable::and(&int_a, &int_b) }
-                    _ => { Err(format!("SUM Mismatched types, {:?} {:?}", a, b).to_string()) }
+                    _ => { Err(anyhow!("SUM Mismatched types, {:?} {:?}", a, b)) }
                 }
             }
         }
     }
 
-    fn shl(a: &LocalVariable, b: &LocalVariable) -> Result<LocalVariable, String> {
+    fn shl(a: &LocalVariable, b: &LocalVariable) -> Result<LocalVariable, anyhow::Error> {
         match (a, b) {
             (LocalVariable::Long(num_a), LocalVariable::Int(num_b)) => {
                 Ok(LocalVariable::Long(num_a << num_b))
@@ -245,7 +246,7 @@ impl Arithmetic<LocalVariable> for LocalVariable {
                 match (&int_a, &int_b)
                 {
                     (LocalVariable::Int(_), LocalVariable::Int(_)) => { LocalVariable::and(&int_a, &int_b) }
-                    _ => { Err(format!("SUM Mismatched types, {:?} {:?}", a, b).to_string()) }
+                    _ => { Err(anyhow!("SHL Mismatched types, {:?} {:?}", a, b)) }
                 }
             }
         }

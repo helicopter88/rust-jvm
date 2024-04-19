@@ -3,12 +3,12 @@ use std::fs::File;
 use std::io::{Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use anyhow::anyhow;
 use crate::rustvm::class::{Class, ClassRef, Object};
 use crate::rustvm::enums::{Attribute, ConstantPool, Field, FLAG_ABSTRACT, FLAG_FINAL, FLAG_PUBLIC, FLAG_STATIC, FLAG_SUPER, Flags, LocalVariable, FLAG_SYNTHETIC, FLAG_NATIVE};
 use crate::rustvm::enums::ConstantPool::Empty;
 use crate::rustvm::frame::{ExecutionResult, Frame};
 use crate::rustvm::enums::ReferenceKind::{ObjectReference, ClassReference, Null, ArrayReference};
-use std::borrow::Borrow;
 
 pub struct VM
 {
@@ -21,7 +21,7 @@ pub struct VM
     cl: DeferredClassLoader,
 }
 
-pub(crate) type NativeMethods = HashMap<String, Rc<dyn Fn(ClassRef, &mut Frame, &[LocalVariable], &mut VM) -> Result<LocalVariable, String>>>;
+pub(crate) type NativeMethods = HashMap<String, Rc<dyn Fn(ClassRef, &mut Frame, &[LocalVariable], &mut VM) -> Result<LocalVariable, anyhow::Error>>>;
 
 pub(crate) struct FileReader
 {
@@ -36,7 +36,7 @@ struct DeferredClassLoader
 }
 
 impl FileReader {
-    pub fn read_class_from_file(file_name: &str) -> Result<ClassRef, String>
+    pub fn read_class_from_file(file_name: &str) -> Result<ClassRef, anyhow::Error>
     {
         let file = File::open(file_name);
         if file.is_err() {
@@ -280,11 +280,10 @@ impl FileReader {
 
 impl VM
 {
-    pub fn new(file_name: &str, class_path: &str) -> Result<VM, String>
+    pub fn new(file_name: &str, class_path: &str) -> Result<VM, anyhow::Error>
     {
         let classpath = Path::new(class_path);
 
-        let main_class = FileReader::read_class_from_file(file_name)?;
 
         let mut ret = Self {
             classes: Box::new(HashMap::new()),
@@ -296,12 +295,14 @@ impl VM
             native_fields: Default::default(),
         };
 
-        ret.cl.insert_class(&(*main_class).borrow().name, main_class.clone());
+        let main_class = FileReader::read_class_from_file(file_name)?;
+        ret.cl.insert_class(&main_class.name.clone(), main_class);
+
         ret.native_methods.insert(VM::make_native_method_name("java/lang/Object", "getClass"), Rc::new(|_class, _frame, variables, vm| {
             if let LocalVariable::Reference(ObjectReference(idx)) = variables[0]
             {
                 let objects = &vm.objects;
-                let obj = (*objects.get(idx).unwrap().class).borrow().name.clone();
+                let obj = objects.get(idx).unwrap().class.name.clone();
 
                 return Ok(LocalVariable::Reference(ClassReference(obj)));
             } else {
@@ -331,7 +332,7 @@ impl VM
                 }
                 return Ok(LocalVariable::Reference(ObjectReference(obj)));
             }
-            return Err("Unexpected argument".into());
+            return Err(anyhow::Error::msg("Unexpected argument"));
         }));
         ret.native_methods.insert(VM::make_native_method_name("java/lang/System", "arraycopy"), Rc::new(|_class, _frame, variables, vm| {
             let src = variables[0].clone();
@@ -344,8 +345,8 @@ impl VM
                 if let LocalVariable::Reference(ArrayReference(dst_ref)) = dst
                 {
                     let borrowed_arrays = &mut vm.arrays;
-                    let src_arr = borrowed_arrays.get(src_ref).ok_or("Source did not exist")?.clone();
-                    let mut dst_arr = borrowed_arrays.get_mut(dst_ref).ok_or("Destination did not exist")?.clone();
+                    let src_arr = borrowed_arrays.get(src_ref).ok_or(anyhow!("Source did not exist"))?.clone();
+                    let mut dst_arr = borrowed_arrays.get_mut(dst_ref).ok_or(anyhow!("Destination did not exist"))?.clone();
 
                     let mut count = end as usize;
                     for item in *src_arr
@@ -358,10 +359,10 @@ impl VM
                         count += 1;
                     }
                 } else {
-                    return Err(format!("Dest was not an array {:?} in {:?}", dst, variables));
+                    return Err(anyhow!("Dest was not an array {:?} in {:?}", dst, variables));
                 }
             } else {
-                return Err(format!("Source was not an array {:?} in {:?}", src, variables));
+                return Err(anyhow!("Source was not an array {:?} in {:?}", src, variables));
             }
 
             return Ok(LocalVariable::Void());
@@ -439,7 +440,7 @@ impl VM
     {
         let class = self.get_class(&class_name).unwrap();
         let mut fields = HashMap::new();
-        for field in &(*class).borrow().fields {
+        for field in &class.fields {
             if field.flags & (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) == (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) {
                 if field.name == "$assertionsDisabled"
                 {
@@ -456,7 +457,7 @@ impl VM
                             buf[idx] = attrib.data[0 + idx]
                         }
                         let const_idx: u16 = u16::from_be_bytes(buf);
-                        if let Some(cp) = (*class).borrow().constant_pool.get(const_idx as usize) {
+                        if let Some(cp) = class.constant_pool.get(const_idx as usize) {
                             fields.insert(field.name.clone(), LocalVariable::from_constant_pool(cp.clone()));
                         }
                         continue;
@@ -526,31 +527,9 @@ impl VM
         return self.arrays.len() - 1;
     }
 
-    pub(crate) fn get_class_impl(&self, class_name: &str) -> Option<ClassRef>
+    pub(crate) fn find_field(&self, obj_ref: usize, method_name: &str, method_type: &str) -> Result<LocalVariable, anyhow::Error>
     {
-        if let Some(class) = (*self.classes).borrow().get(class_name) {
-            return Some(class.clone());
-        }
-        if class_name.contains("Error") || class_name.contains("Exception")
-        {
-            panic!("{} occurred", class_name);
-        }
-        let full_class_name = format!("{}.class", class_name);
-        let full_class_path = Path::new(full_class_name.as_str());
-        let file = self.classpath.join(full_class_path);
-        if file.is_file() {
-            let new_class = FileReader::read_class_from_file(file.as_os_str().to_str()?);
-            if new_class.is_ok() {
-                let ok_class = new_class.unwrap().clone();
-                return Some(ok_class.clone());
-            }
-        }
-        None
-    }
-
-    pub(crate) fn find_field(&self, obj_ref: usize, method_name: &str, method_type: &str) -> Result<LocalVariable, String>
-    {
-        let object = self.objects.get(obj_ref).ok_or("Object did not exist")?;
+        let object = self.objects.get(obj_ref).ok_or(anyhow!("Object did not exist"))?;
         let field_ref = &object.fields;
         let field_val = &field_ref.get(method_name);
         if field_val.is_some()
@@ -564,7 +543,7 @@ impl VM
         let super_instance = object.super_instance.clone();
         if super_instance.is_none()
         {
-            return Err(format!("Field {}({}) not found in {:?}", method_name, method_type, obj_ref));
+            return Err(anyhow!("Field {}({}) not found in {:?}", method_name, method_type, obj_ref));
         }
         return dbg!(self.find_field(super_instance.unwrap(), method_name, method_type));
     }
@@ -582,13 +561,13 @@ impl VM
         }
         let class = maybe_class.unwrap();
 
-        self.cl.load_class(&(*class).borrow().super_class);
+        self.cl.load_class(&class.super_class);
 
         // TODO: static initialisers and class initialisers
         Some(class)
     }
 
-    pub(crate) fn create_superclass(&mut self, this_idx: usize, class_name_ref: &str) -> Result<LocalVariable, String>
+    pub(crate) fn create_superclass(&mut self, this_idx: usize, class_name_ref: &str) -> Result<LocalVariable, anyhow::Error>
     {
         let super_instance_idx: usize = self.new_object(class_name_ref);
 
@@ -597,7 +576,7 @@ impl VM
         return Ok(LocalVariable::Reference(ObjectReference(this_instance.get_super_instance().unwrap())));
     }
 
-    pub fn start(&mut self, main_class: String) -> Result<Option<LocalVariable>, String>
+    pub fn start(&mut self, main_class: String) -> Result<Option<LocalVariable>, anyhow::Error>
     {
         let mut frame_stack: VecDeque<Frame> = VecDeque::new();
         let init_class = self.get_class("java/lang/System").unwrap();
@@ -675,7 +654,7 @@ impl DeferredClassLoader {
             {
                 self.classes.insert(class_name.into(), class.clone());
             }
-            let super_class = (*class).borrow().super_class.clone();
+            let super_class = class.super_class.clone();
             let super_loaded = DeferredClassLoader::get_class_impl(&self.classpath, super_class.as_str());
             if let Some(s) = super_loaded {
                 self.classes.insert(super_class, s.clone());
