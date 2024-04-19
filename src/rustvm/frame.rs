@@ -127,9 +127,9 @@ impl Frame {
             }
         }
 
-        let maybe_super_class = vm.get_class(&class.super_class);
-        if let Some(super_class) = maybe_super_class
+        if !class.super_class.is_empty()
         {
+            let super_class = vm.get_class(&class.super_class)?;
             return Frame::new(super_class.clone(), method_name, local_variables, method_type, vm);
         }
 
@@ -471,8 +471,7 @@ impl Frame {
 
                     let class_name_ref = &method_ref.0;
                     let mut new_stack = vec![];
-                    let class = vm.get_class(class_name_ref)
-                        .ok_or(anyhow!("Could not find class {:#?}", class_name_ref))?
+                    let class = vm.get_class(class_name_ref)?
                         .clone();
                     let (argc, ret) = parse_type(&method_type)?;
                     for _ in 0..argc {
@@ -500,8 +499,7 @@ impl Frame {
 
                     let class_name_ref = &class_name;
                     let mut new_stack = vec![];
-                    let class = vm.get_class(class_name_ref)
-                        .ok_or(anyhow!("Could not find class {:#?}", class_name_ref))?
+                    let class = vm.get_class(class_name_ref)?
                         .clone();
                     let (argc, ret) = parse_type(&method_type)?;
 

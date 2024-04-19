@@ -67,11 +67,7 @@ impl Class {
                       methods: Vec<Field>,
                       attributes: Vec<Attribute>) -> Self {
         let static_fields = Box::new(HashMap::from([("$assertionsDisabled".to_string(), LocalVariable::Boolean(true))]));
-
-        for field in fields
-        {
-            field.flags
-        }
+        
         Class {
             constant_pool,
             name,
@@ -81,7 +77,7 @@ impl Class {
             fields,
             methods,
             attributes,
-            static_fields,
+            static_fields
         }
     }
     pub(crate) fn resolve_string(&self, idx: usize) -> String

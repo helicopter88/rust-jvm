@@ -1,14 +1,16 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::{Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
 use anyhow::anyhow;
+
 use crate::rustvm::class::{Class, ClassRef, Object};
-use crate::rustvm::enums::{Attribute, ConstantPool, Field, FLAG_ABSTRACT, FLAG_FINAL, FLAG_PUBLIC, FLAG_STATIC, FLAG_SUPER, Flags, LocalVariable, FLAG_SYNTHETIC, FLAG_NATIVE};
+use crate::rustvm::enums::{Attribute, ConstantPool, Field, FLAG_ABSTRACT, FLAG_FINAL, FLAG_NATIVE, FLAG_PUBLIC, FLAG_STATIC, FLAG_SUPER, FLAG_SYNTHETIC, Flags, LocalVariable};
 use crate::rustvm::enums::ConstantPool::Empty;
+use crate::rustvm::enums::ReferenceKind::{ArrayReference, ClassReference, Null, ObjectReference};
 use crate::rustvm::frame::{ExecutionResult, Frame};
-use crate::rustvm::enums::ReferenceKind::{ObjectReference, ClassReference, Null, ArrayReference};
 
 pub struct VM
 {
@@ -40,7 +42,7 @@ impl FileReader {
     {
         let file = File::open(file_name);
         if file.is_err() {
-            panic!("Couldn't open file: {:?}", file.err())
+            return Err(anyhow!("Couldn't open file: {:?}", file.err()));
         }
         let mut ret = Self { file: file.unwrap(), constant_pool: vec![] };
 
@@ -50,7 +52,7 @@ impl FileReader {
     fn resolve_constant_pool(&mut self) -> Vec<ConstantPool>
     {
         let pool_size = self.read_u16() as usize;
-        let mut constant_pool: Vec<ConstantPool> = vec![ConstantPool::Empty(); pool_size + 1];
+        let mut constant_pool: Vec<ConstantPool> = vec![Empty(); pool_size + 1];
         let mut count = 1;
         loop
         {
@@ -375,7 +377,8 @@ impl VM
             }));
         ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "vmProperties"), Rc::new(|_class, _frame, _variables, vm|
             {
-                let arr_idx = vm.new_array(12, 0);
+                println!("Called VM props");
+                let arr_idx = vm.new_array(12, 10);
                 Ok(LocalVariable::Reference(ArrayReference(arr_idx)))
             }));
         Ok(ret)
@@ -438,15 +441,16 @@ impl VM
 
     pub(crate) fn new_object(&mut self, class_name: &str) -> usize
     {
-        let class = self.get_class(&class_name).unwrap();
+        let mut class = self.get_class(&class_name).unwrap();
         let mut fields = HashMap::new();
         for field in &class.fields {
-            if field.flags & (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) == (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) {
+            if field.flags & (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) == (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) || field.flags & FLAG_NATIVE | FLAG_FINAL | FLAG_STATIC == (FLAG_NATIVE | FLAG_FINAL | FLAG_STATIC) {
                 if field.name == "$assertionsDisabled"
                 {
-                    fields.insert(field.name.clone(), LocalVariable::Boolean(true));
+                    class.static_fields.insert(field.name.clone(), LocalVariable::Boolean(true));
+                } else {
+                    class.static_fields.insert(field.name.clone(), self.default_initialiser(field.descriptor.as_str(), true));
                 }
-                continue;
             }
             if field.flags & FLAG_FINAL | FLAG_STATIC == FLAG_FINAL | FLAG_STATIC && VM::type_to_class(&field.descriptor) != class_name
             {
@@ -458,12 +462,12 @@ impl VM
                         }
                         let const_idx: u16 = u16::from_be_bytes(buf);
                         if let Some(cp) = class.constant_pool.get(const_idx as usize) {
-                            fields.insert(field.name.clone(), LocalVariable::from_constant_pool(cp.clone()));
+                            class.static_fields.insert(field.name.clone(), LocalVariable::from_constant_pool(cp.clone()));
                         }
                         continue;
                     }
                 }
-                fields.insert(field.name.clone(), self.default_initialiser(&field.descriptor, true));
+                class.static_fields.insert(field.name.clone(), self.default_initialiser(&field.descriptor, true));
             } else {
                 fields.insert(field.name.clone(), self.default_initialiser(&field.descriptor, false));
             }
@@ -491,7 +495,7 @@ impl VM
         array
     }
     pub(crate) fn new_array(&mut self, arr_type: u8, count: usize) -> usize {
-        let arr_initaliser = match arr_type {
+        let arr_initializer = match arr_type {
             4 => {
                 LocalVariable::Boolean(false)
             }
@@ -521,7 +525,7 @@ impl VM
             }
             _ => { panic!("no"); }
         };
-        let arr = vec![arr_initaliser; count + 1];
+        let arr = vec![arr_initializer; count + 1];
         println!("Initialising array, idx={}, type={}, count={}", self.arrays.len(), arr_type, &arr.len());
         self.arrays.push(Box::new(arr));
         return self.arrays.len() - 1;
@@ -547,24 +551,20 @@ impl VM
         }
         return dbg!(self.find_field(super_instance.unwrap(), method_name, method_type));
     }
-    pub(crate) fn get_class(&mut self, class_name: &str) -> Option<ClassRef>
+    pub(crate) fn get_class(&mut self, class_name: &str) -> Result<ClassRef, anyhow::Error>
     {
         if class_name.is_empty()
         {
-            return None;
+            return Err(anyhow!("Empty class name!"));
         }
         dbg!("Loading class: ", class_name);
-        let maybe_class = self.cl.load_class(class_name);
-        if maybe_class.is_none()
+        let class = self.cl.load_class(class_name)?;
+        if !class.super_class.is_empty()
         {
-            return None;
+            self.cl.load_class(&class.super_class)?;
         }
-        let class = maybe_class.unwrap();
-
-        self.cl.load_class(&class.super_class);
-
         // TODO: static initialisers and class initialisers
-        Some(class)
+        Ok(class)
     }
 
     pub(crate) fn create_superclass(&mut self, this_idx: usize, class_name_ref: &str) -> Result<LocalVariable, anyhow::Error>
@@ -589,7 +589,7 @@ impl VM
             let frame = frame_stack.front_mut().unwrap();
             if let Some(to_be_put) = &maybe_result {
                 match to_be_put {
-                    LocalVariable::Void() => { }
+                    LocalVariable::Void() => {}
                     it => { frame.stack.push_front(it.clone()) }
                 }
                 maybe_result = None;
@@ -622,13 +622,13 @@ impl DeferredClassLoader {
         Self { classpath, classes: Default::default() }
     }
 
-    pub(crate) fn get_class_impl(classpath: &PathBuf, class_name: &str) -> Option<ClassRef>
+    pub(crate) fn get_class_impl(classpath: &PathBuf, class_name: &str) -> Result<ClassRef, anyhow::Error>
     {
         println!("Loading {}", class_name);
 
         if class_name.contains("Error") || class_name.contains("Exception")
         {
-            panic!("{} occurred", class_name);
+            return Err(anyhow!("Error or exception occurred, exception={}", class_name));
         }
         let full_class_name = format!("{}.class", class_name);
         let full_class_path = Path::new(full_class_name.as_str());
@@ -636,36 +636,27 @@ impl DeferredClassLoader {
         println!("Loading {} from {:?}", class_name, file);
         if file.is_file() {
             println!("Loaded {} from {:?}", class_name, file);
-            let new_class = FileReader::read_class_from_file(file.as_os_str().to_str()?);
-            if new_class.is_ok() {
-                let ok_class = new_class.unwrap().clone();
-                return Some(ok_class.clone());
-            }
+            return FileReader::read_class_from_file(file.as_os_str().to_str().ok_or(anyhow!("Couldn't convert file into string, file={}", file.display()))?);
         }
-        None
+        Err(anyhow!("Class {} not found", class_name))
     }
 
-    pub(crate) fn load_class(&mut self, class_name: &str) -> Option<ClassRef>
+    pub(crate) fn load_class(&mut self, class_name: &str) -> Result<ClassRef, anyhow::Error>
     {
         if let Some(class) = self.classes.get(class_name)
         {
             println!("Class was loaded {}", class_name);
-            return Some(class.clone());
+            return Ok(class.clone());
         }
-        let loaded_class = DeferredClassLoader::get_class_impl(&self.classpath, class_name).clone();
-        if let Some(class) = loaded_class {
-            {
-                self.classes.insert(class_name.into(), class.clone());
-            }
-            let super_class = class.super_class.clone();
-            let super_loaded = DeferredClassLoader::get_class_impl(&self.classpath, super_class.as_str());
-            if let Some(s) = super_loaded {
-                self.classes.insert(super_class, s.clone());
-            }
-            ;
-            return Some(class);
+        let loaded_class = DeferredClassLoader::get_class_impl(&self.classpath, class_name)?;
+        self.classes.insert(class_name.into(), loaded_class.clone());
+        if !loaded_class.super_class.is_empty()
+        {
+            let super_class = loaded_class.super_class.clone();
+            let super_loaded = DeferredClassLoader::get_class_impl(&self.classpath, super_class.as_str())?;
+            self.classes.insert(super_class, super_loaded.clone());
         }
-        None
+        Ok(loaded_class)
     }
 
     pub(crate) fn insert_class(&mut self, class_name: &str, class: ClassRef)
