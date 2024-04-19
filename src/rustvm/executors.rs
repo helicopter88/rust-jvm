@@ -94,7 +94,7 @@ pub(super) fn execute_load_integer_const(op: u8, stack: &mut Stack)
 
 pub(crate) fn execute_load_long_const(op: u8, stack: &mut Stack)
 {
-    const NEGATIVE_ONE_STARTING_POINT: i64 = 0x1e;
+    const NEGATIVE_ONE_STARTING_POINT: i64 = 0x9;
     stack.push_front(LocalVariable::Long(op as i64 - NEGATIVE_ONE_STARTING_POINT))
 }
 

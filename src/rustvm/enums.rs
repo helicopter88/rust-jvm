@@ -92,12 +92,12 @@ pub enum LocalVariable {
 
 impl LocalVariable
 {
-    pub(crate) fn to_int(&self) -> i32
+    pub(crate) fn to_int(&self) -> anyhow::Result<i32>
     {
         match self.to_lv_int()
         {
-            LocalVariable::Int(i) => { return i; }
-            def => { panic!("Wut, got {:?}", def) }
+            LocalVariable::Int(i) => { return Ok(i); }
+            def => { Err(anyhow!("Wut, got {:?}", def)) }
         }
     }
     pub(crate) fn to_lv_int(&self) -> LocalVariable

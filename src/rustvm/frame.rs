@@ -234,30 +234,33 @@ impl Frame {
                 0x1A | 0x1B | 0x1C | 0x1D/* iload_<n> */ => {
                     execute_iload_n(op, &self.locals, &mut self.stack)?
                 }
+                0x1E | 0x1F | 0x20 | 0x21 /* lload_<n> */ => {
+                    execute_lload_n(op, &self.locals, &mut self.stack)?
+                }
                 0x22 | 0x23 | 0x24 | 0x25/* iload_<n> */ => {
                     execute_fload_n(op, &self.locals, &mut self.stack)?
                 }
-                0x1e | 0x1f | 0x20 | 0x21 /* lload_<d> */ => {
+                0x9 | 0xa /* lconst_<i> */ => {
                     execute_load_long_const(op, &mut self.stack);
                 }
                 0x12 | 0x13 /*ldc*/ => {
                     let idx = match op {
-                        0x12 => { self.get_u8() as usize }
-                        0x13 => { self.get_u16() as usize }
-                        _ => { panic!("Can't happen"); }
-                    };
+                        0x12 => { Ok(self.get_u8() as usize) }
+                        0x13 => { Ok(self.get_u16() as usize) }
+                        _ => { Err(anyhow!("Can't happen")) }
+                    }?;
                     match &self.class.constant_pool.get(idx).ok_or(anyhow!("Couldn't find item in cp at {}", idx))? {
                         ConstantPool::Integer(num) => { self.stack.push_front(LocalVariable::Int(*num)); }
                         ConstantPool::Float(f) => { self.stack.push_front(LocalVariable::Float(*f)) }
                         ConstantPool::Long(num) => { self.stack.push_front(LocalVariable::Long(*num)); }
                         ConstantPool::Double(f) => { self.stack.push_front(LocalVariable::Double(*f)) }
                         ConstantPool::StringIndex(_s_idx) => {
-                            self.stack.push_front(LocalVariable::Reference(ObjectReference(vm.new_object("java/lang/String"))));
+                            self.stack.push_front(LocalVariable::Reference(ObjectReference(vm.new_object("java/lang/String")?)));
                         }
                         ConstantPool::ClassIndex(idx) => {
                             self.stack.push_front(LocalVariable::Reference(ReferenceKind::ClassReference(self.class.resolve_string(*idx as usize))))
                         }
-                        def => return Err(anyhow::Error::msg(format!("Unexpected item={:?}", def)))
+                        def => return Err(anyhow!("Unexpected item={:?}", def))
                     };
                 }
                 0x74 /* ineg */ => {
@@ -607,7 +610,7 @@ impl Frame {
                     let idx = self.get_u16();
                     let class_name = self.class.resolve_string(idx as usize);
 
-                    self.stack.push_front(LocalVariable::Reference(ObjectReference(vm.new_object(&class_name))));
+                    self.stack.push_front(LocalVariable::Reference(ObjectReference(vm.new_object(&class_name)?)));
                 }
                 0xC6 | 0xC7 /*if(non)null */ => {
                     let jump_idx = self.get_u16() as i16;
@@ -628,7 +631,7 @@ impl Frame {
                     let count_var = self.stack.pop_front().ok_or(anyhow!("No count for array"))?;
                     if let LocalVariable::Int(count) = count_var {
                         let arr_type = self.get_u8();
-                        self.stack.push_front(LocalVariable::Reference(ReferenceKind::ArrayReference(vm.new_array(arr_type, count as usize))));
+                        self.stack.push_front(LocalVariable::Reference(ReferenceKind::ArrayReference(vm.new_array(arr_type, count as usize)?)));
                         Ok(())
                     } else {
                         Err(anyhow!("Wtf {:?}", count_var))
