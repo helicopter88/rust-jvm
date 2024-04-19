@@ -1,27 +1,27 @@
-use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-
-use crate::class::{Class, Object};
-use crate::enums::{Attribute, ConstantPool, Field, FLAG_ABSTRACT, FLAG_ENUM, FLAG_FINAL, FLAG_PUBLIC, FLAG_STATIC, FLAG_SUPER, Flags, LocalVariable, ReferenceKind, FLAG_SYNTHETIC, FLAG_NATIVE};
-use crate::enums::ConstantPool::Empty;
-use crate::frame::Frame;
-use crate::enums::ReferenceKind::{ObjectReference, ClassReference, Null, ArrayReference};
+use crate::rustvm::class::{Class, ClassRef, Object};
+use crate::rustvm::enums::{Attribute, ConstantPool, Field, FLAG_ABSTRACT, FLAG_FINAL, FLAG_PUBLIC, FLAG_STATIC, FLAG_SUPER, Flags, LocalVariable, FLAG_SYNTHETIC, FLAG_NATIVE};
+use crate::rustvm::enums::ConstantPool::Empty;
+use crate::rustvm::frame::{ExecutionResult, Frame};
+use crate::rustvm::enums::ReferenceKind::{ObjectReference, ClassReference, Null, ArrayReference};
 use std::borrow::Borrow;
 
 pub struct VM
 {
     classpath: PathBuf,
-    classes: Box<HashMap<String, Rc<Class>>>,
-    pub(crate) objects: Box<Vec<Rc<Object>>>,
-    pub(crate) native_methods: HashMap<String, Rc<dyn Fn(&Class, &mut Frame, &[LocalVariable]) -> Result<LocalVariable, String>>>,
+    classes: Box<HashMap<String, ClassRef>>,
+    pub(crate) objects: Box<Vec<Object>>,
+    pub(crate) native_methods: NativeMethods,
     pub(crate) native_fields: HashMap<String, LocalVariable>,
     pub(crate) arrays: Box<Vec<Box<Vec<LocalVariable>>>>,
     cl: DeferredClassLoader,
 }
+
+pub(crate) type NativeMethods = HashMap<String, Rc<dyn Fn(ClassRef, &mut Frame, &[LocalVariable], &mut VM) -> Result<LocalVariable, String>>>;
 
 pub(crate) struct FileReader
 {
@@ -32,11 +32,11 @@ pub(crate) struct FileReader
 struct DeferredClassLoader
 {
     classpath: PathBuf,
-    classes: Box<HashMap<String, Rc<Class>>>
+    classes: Box<HashMap<String, ClassRef>>,
 }
 
 impl FileReader {
-    pub fn read_class_from_file(file_name: &str) -> Result<Rc<Class>, String>
+    pub fn read_class_from_file(file_name: &str) -> Result<ClassRef, String>
     {
         let file = File::open(file_name);
         if file.is_err() {
@@ -154,7 +154,7 @@ impl FileReader {
     {
         let mut attributes: Vec<Attribute> = vec![];
         let attributes_count = self.read_u16();
-        attributes.reserve((attributes_count.into()));
+        attributes.reserve(attributes_count as _);
         for _ in 0..attributes_count
         {
             let name_idx = self.read_u16() as usize;
@@ -191,7 +191,7 @@ impl FileReader {
         }
         ret
     }
-    fn read_class(&mut self) -> Rc<Class>
+    fn read_class(&mut self) -> ClassRef
     {
         let begin = self.read_u32();
         assert_eq!(begin, 0xCAFEBABE);
@@ -216,7 +216,7 @@ impl FileReader {
         let fields = self.resolve_fields();
         let methods = self.resolve_fields();
         let attributes = self.resolve_attributes();
-        Rc::new(Class::new(
+        Box::new(Class::new(
             constant_pool.to_vec(),
             name,
             super_class,
@@ -296,34 +296,34 @@ impl VM
             native_fields: Default::default(),
         };
 
-        ret.cl.insert_class(&main_class.name, main_class.clone());
-        ret.native_methods.insert(VM::make_native_method_name("java/lang/Object", "getClass"), Rc::new(|class, frame, variables| {
+        ret.cl.insert_class(&(*main_class).borrow().name, main_class.clone());
+        ret.native_methods.insert(VM::make_native_method_name("java/lang/Object", "getClass"), Rc::new(|_class, _frame, variables, vm| {
             if let LocalVariable::Reference(ObjectReference(idx)) = variables[0]
             {
-                let objects = frame.vm.objects.clone();
-                let obj = objects.get(idx).unwrap().class.name.to_string();
+                let objects = &vm.objects;
+                let obj = (*objects.get(idx).unwrap().class).borrow().name.clone();
 
                 return Ok(LocalVariable::Reference(ClassReference(obj)));
             } else {
                 panic!("Wtf")
             }
         }));
-        ret.native_methods.insert(VM::make_native_method_name("java/lang/Object", "hashCode"), Rc::new(|class, frame, variables| {
+        ret.native_methods.insert(VM::make_native_method_name("java/lang/Object", "hashCode"), Rc::new(|_class, _frame, variables, _| {
             if let LocalVariable::Reference(ObjectReference(idx)) = variables[0] {
                 return Ok(LocalVariable::Int(idx as i32 * 3));
             } else {
                 panic!("Wtf")
             }
         }));
-        ret.native_methods.insert(VM::make_native_method_name("java/lang/Class", "getName"), Rc::new(|class, frame, variables| {
+        ret.native_methods.insert(VM::make_native_method_name("java/lang/Class", "getName"), Rc::new(|_class, _frame, variables, vm| {
             if let LocalVariable::Reference(ClassReference(idx)) = &variables[0]
             {
-                let obj = frame.vm.new_object("java/lang/String");
-                let string_class = frame.vm.get_class("java/lang/String").unwrap();
-                let array = frame.vm.new_string(&idx);
-                let res = Frame::new(frame.vm, string_class, "<init>",
-                                     [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ReferenceKind::ArrayReference(array))].to_vec()
-                                     , "([C)V")?.exec();
+                let obj = vm.new_object("java/lang/String");
+                let string_class = vm.get_class("java/lang/String").unwrap();
+                let array = vm.new_string(&idx);
+                let res = Frame::new(string_class, "<init>",
+                                     [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ArrayReference(array))].to_vec()
+                                     , "([C)V", vm)?.exec(vm);
                 println!("getName returned {:?}", res);
                 if res.is_err()
                 {
@@ -333,9 +333,9 @@ impl VM
             }
             return Err("Unexpected argument".into());
         }));
-        ret.native_methods.insert(VM::make_native_method_name("java/lang/System", "arraycopy"), Rc::new(|class, frame, variables| {
+        ret.native_methods.insert(VM::make_native_method_name("java/lang/System", "arraycopy"), Rc::new(|_class, _frame, variables, vm| {
             let src = variables[0].clone();
-            let start = variables[1].clone().to_int() as usize;
+            let _start = variables[1].clone().to_int() as usize;
             let dst = variables[2].clone();
             let end = variables[3].clone().to_int() as usize;
             let len = variables[4].clone().to_int() as usize;
@@ -343,9 +343,9 @@ impl VM
             {
                 if let LocalVariable::Reference(ArrayReference(dst_ref)) = dst
                 {
-                    let borrowed_arrays = &frame.vm.arrays;
+                    let borrowed_arrays = &mut vm.arrays;
                     let src_arr = borrowed_arrays.get(src_ref).ok_or("Source did not exist")?.clone();
-                    let dst_arr = borrowed_arrays.get(dst_ref).ok_or("Destination did not exist")?.clone();
+                    let mut dst_arr = borrowed_arrays.get_mut(dst_ref).ok_or("Destination did not exist")?.clone();
 
                     let mut count = end as usize;
                     for item in *src_arr
@@ -366,15 +366,15 @@ impl VM
 
             return Ok(LocalVariable::Void());
         }));
-        ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "platformProperties"), Rc::new(|class, frame, variables|
+        ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "platformProperties"), Rc::new(|_class, _frame, _variables, vm|
             {
                 println!("Called system props");
-                let arr_idx = frame.vm.new_array(12, 38);
+                let arr_idx = vm.new_array(12, 38);
                 Ok(LocalVariable::Reference(ArrayReference(arr_idx)))
             }));
-        ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "vmProperties"), Rc::new(|class, frame, variables|
+        ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "vmProperties"), Rc::new(|_class, _frame, _variables, vm|
             {
-                let arr_idx = frame.vm.new_array(12, 0);
+                let arr_idx = vm.new_array(12, 0);
                 Ok(LocalVariable::Reference(ArrayReference(arr_idx)))
             }));
         Ok(ret)
@@ -382,7 +382,7 @@ impl VM
 
     pub(crate) fn make_native_method_name(class_name: &str, method_name: &str) -> String
     {
-        format!("{}.{}", class_name.clone(), method_name).to_string()
+        format!("{}.{}", class_name, method_name).to_string()
     }
 
 
@@ -437,9 +437,9 @@ impl VM
 
     pub(crate) fn new_object(&mut self, class_name: &str) -> usize
     {
-        let class = &self.get_class(&class_name).unwrap();
+        let class = self.get_class(&class_name).unwrap();
         let mut fields = HashMap::new();
-        for field in &class.fields {
+        for field in &(*class).borrow().fields {
             if field.flags & (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) == (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) {
                 if field.name == "$assertionsDisabled"
                 {
@@ -456,7 +456,7 @@ impl VM
                             buf[idx] = attrib.data[0 + idx]
                         }
                         let const_idx: u16 = u16::from_be_bytes(buf);
-                        if let Some(cp) = class.constant_pool.get(const_idx as usize) {
+                        if let Some(cp) = (*class).borrow().constant_pool.get(const_idx as usize) {
                             fields.insert(field.name.clone(), LocalVariable::from_constant_pool(cp.clone()));
                         }
                         continue;
@@ -467,20 +467,20 @@ impl VM
                 fields.insert(field.name.clone(), self.default_initialiser(&field.descriptor, false));
             }
         }
-        self.objects.push(Rc::new(Object {
+        self.objects.push(Object {
             class: class.clone(),
             super_instance: Box::new(None),
             fields: Box::new(fields),
-        }));
+        });
         self.objects.len() - 1
     }
 
-    pub(crate) fn set_array_element(&self, array: usize, idx: usize, elem: LocalVariable) {
+    pub(crate) fn set_array_element(&mut self, array: usize, idx: usize, elem: LocalVariable) {
         println!("The array is {:?}", self.arrays[array]);
         self.arrays[array][idx] = elem;
     }
 
-    pub(crate) fn new_string(&self, string: &str) -> usize {
+    pub(crate) fn new_string(&mut self, string: &str) -> usize {
         let array = self.new_array(5, string.len());
         println!("Creating new string array, idx={} for str={}", array, string);
         for (idx, char) in string.chars().enumerate()
@@ -526,7 +526,7 @@ impl VM
         return self.arrays.len() - 1;
     }
 
-    pub(crate) fn get_class_impl(&self, class_name: &str) -> Option<Rc<Class>>
+    pub(crate) fn get_class_impl(&self, class_name: &str) -> Option<ClassRef>
     {
         if let Some(class) = (*self.classes).borrow().get(class_name) {
             return Some(class.clone());
@@ -548,63 +548,90 @@ impl VM
         None
     }
 
-    pub(crate) fn find_field(self: &mut Self, obj_ref: &Rc<Object>, method_name: &str, method_type: &str) -> Result<LocalVariable, String>
+    pub(crate) fn find_field(&self, obj_ref: usize, method_name: &str, method_type: &str) -> Result<LocalVariable, String>
     {
-        let field_ref = &obj_ref.fields;
+        let object = self.objects.get(obj_ref).ok_or("Object did not exist")?;
+        let field_ref = &object.fields;
         let field_val = &field_ref.get(method_name);
         if field_val.is_some()
         {
             return Ok(field_val.unwrap().clone());
         }
-        if let Some(t) = self.native_fields.get(&*VM::make_native_method_name(&obj_ref.class.name, method_name))
+        if let Some(t) = self.native_fields.get(&*VM::make_native_method_name(&object.class.name, method_name))
         {
             return Ok(t.clone());
         }
-        let super_instance = obj_ref.super_instance.clone();
+        let super_instance = object.super_instance.clone();
         if super_instance.is_none()
         {
             return Err(format!("Field {}({}) not found in {:?}", method_name, method_type, obj_ref));
         }
-        let obj_map_ref = self.objects;
-        let super_instance_ref = obj_map_ref.get(super_instance.unwrap()).ok_or(format!("Null pointer exception with superclass {}", super_instance.unwrap()))?;
-        return dbg!(self.find_field(super_instance_ref, method_name, method_type));
+        return dbg!(self.find_field(super_instance.unwrap(), method_name, method_type));
     }
-    pub(crate) fn get_class(&mut self, class_name: &str) -> Option<Rc<Class>>
+    pub(crate) fn get_class(&mut self, class_name: &str) -> Option<ClassRef>
     {
         if class_name.is_empty()
         {
             return None;
         }
         dbg!("Loading class: ", class_name);
-        let maybe_class = self.cl.defer_load_class(class_name);
+        let maybe_class = self.cl.load_class(class_name);
         if maybe_class.is_none()
         {
             return None;
         }
         let class = maybe_class.unwrap();
-        let mut maybe_super_class = None;
 
-        maybe_super_class = self.cl.defer_load_class(&class.super_class);
+        self.cl.load_class(&(*class).borrow().super_class);
 
         // TODO: static initialisers and class initialisers
         Some(class)
     }
 
-
-    pub fn start(vm: &mut VM, main_class: String)
+    pub(crate) fn create_superclass(&mut self, this_idx: usize, class_name_ref: &str) -> Result<LocalVariable, String>
     {
-        let class = vm.cl.defer_load_class(&main_class).unwrap();
-        let init = Frame::new(vm, vm.get_class("java/lang/System").unwrap(), "initPhase1", vec![], "()V").unwrap().exec();
-        if let Err(msg) = init {
-            panic!(msg);
-        }
+        let super_instance_idx: usize = self.new_object(class_name_ref);
 
-        let frame = Frame::new(vm, class, "main", vec![], "([Ljava/lang/String;)V");
+        let this_instance = self.objects.get_mut(this_idx).unwrap();
+        this_instance.put_super_instance(super_instance_idx);
+        return Ok(LocalVariable::Reference(ObjectReference(this_instance.get_super_instance().unwrap())));
+    }
 
-        match frame.unwrap().exec() {
-            Ok(res) => { println!("Result of {}: {:#?}", &class.name, res); }
-            Err(msg) => { panic!(msg); }
+    pub fn start(&mut self, main_class: String) -> Result<Option<LocalVariable>, String>
+    {
+        let mut frame_stack: VecDeque<Frame> = VecDeque::new();
+        let init_class = self.get_class("java/lang/System").unwrap();
+        frame_stack.push_front(Frame::new(init_class, "initPhase1", vec![], "()V", self).unwrap());
+        let class = self.cl.load_class(&main_class).unwrap();
+        frame_stack.push_back(Frame::new(class, "main", vec![], "([Ljava/lang/String;)V", self).unwrap());
+        let mut maybe_result: Option<LocalVariable> = None;
+        while !frame_stack.is_empty()
+        {
+            let frame = frame_stack.front_mut().unwrap();
+            if let Some(to_be_put) = &maybe_result {
+                frame.stack.push_front(to_be_put.clone());
+                maybe_result = None;
+            }
+            let result = match frame.will_execute_native_method {
+                true => {
+                    frame.exec(self)
+                }
+                false => {
+                    frame.exec_native(self)
+                }
+            };
+
+            match result? {
+                ExecutionResult::FunctionCallResult(ret) => {
+                    frame_stack.pop_front();
+                    maybe_result = Some(ret);
+                }
+                ExecutionResult::Invoke(f) => {
+                    frame_stack.push_front(f);
+                }
+            }
         }
+        return Ok(maybe_result);
     }
 }
 
@@ -613,7 +640,7 @@ impl DeferredClassLoader {
         Self { classpath, classes: Default::default() }
     }
 
-    pub(crate) fn get_class_impl(classpath: &PathBuf, class_name: &str) -> Option<Rc<Class>>
+    pub(crate) fn get_class_impl(classpath: &PathBuf, class_name: &str) -> Option<ClassRef>
     {
         println!("Loading {}", class_name);
 
@@ -636,7 +663,7 @@ impl DeferredClassLoader {
         None
     }
 
-    pub(crate) fn defer_load_class(&mut self, class_name: &str) -> Option<Rc<Class>>
+    pub(crate) fn load_class(&mut self, class_name: &str) -> Option<ClassRef>
     {
         if let Some(class) = self.classes.get(class_name)
         {
@@ -648,11 +675,10 @@ impl DeferredClassLoader {
             {
                 self.classes.insert(class_name.into(), class.clone());
             }
-            let mut map = &self.classes;
-            let super_class = class.clone().super_class.clone();
+            let super_class = (*class).borrow().super_class.clone();
             let super_loaded = DeferredClassLoader::get_class_impl(&self.classpath, super_class.as_str());
             if let Some(s) = super_loaded {
-                map.insert(super_class, s.clone());
+                self.classes.insert(super_class, s.clone());
             }
             ;
             return Some(class);
@@ -660,7 +686,7 @@ impl DeferredClassLoader {
         None
     }
 
-    pub(crate) fn insert_class(&mut self, class_name: &str, class: Rc<Class>)
+    pub(crate) fn insert_class(&mut self, class_name: &str, class: ClassRef)
     {
         self.classes.insert(class_name.into(), class.clone());
     }

@@ -94,7 +94,7 @@ impl LocalVariable
     {
         match self.to_lv_int()
         {
-            LocalVariable::Int(i) => { return i }
+            LocalVariable::Int(i) => { return i; }
             def => { panic!("Wut, got {:?}", def) }
         }
     }
@@ -111,21 +111,21 @@ impl LocalVariable
     }
 }
 /*impl PartialEq for LocalVariable {
-    fn eq(&self, other: &Self) -> bool {
-        match self {
-            LocalVariable::Void() => { false } ;
-            LocalVariable::Boolean(x) => { x == other.clone() }
-            LocalVariable::Byte(_) => {}
-            LocalVariable::Char(_) => {}
-            LocalVariable::Short(_) => {}
-            LocalVariable::Int(_) => {}
-            LocalVariable::Float(_) => {}
-            LocalVariable::Reference(_) => {}
-            LocalVariable::ReturnAddress(_) => {}
-            LocalVariable::Long(_) => {}
-            LocalVariable::Double(_) => {}
-        }
+fn eq(&self, other: &Self) -> bool {
+    match self {
+        LocalVariable::Void() => { false } ;
+        LocalVariable::Boolean(x) => { x == other.clone() }
+        LocalVariable::Byte(_) => {}
+        LocalVariable::Char(_) => {}
+        LocalVariable::Short(_) => {}
+        LocalVariable::Int(_) => {}
+        LocalVariable::Float(_) => {}
+        LocalVariable::Reference(_) => {}
+        LocalVariable::ReturnAddress(_) => {}
+        LocalVariable::Long(_) => {}
+        LocalVariable::Double(_) => {}
     }
+}
 }*/
 impl LocalVariable {
     pub(crate) fn from_constant_pool(cp: ConstantPool) -> LocalVariable {
@@ -180,7 +180,7 @@ impl Arithmetic<LocalVariable> for LocalVariable {
             (LocalVariable::Double(num_a), LocalVariable::Double(num_b)) => {
                 Ok(LocalVariable::Double(num_a + num_b))
             }
-            def => {
+            _ => {
                 let (int_a, int_b) = (a.to_lv_int(), b.to_lv_int());
                 match (&int_a, &int_b)
                 {
@@ -208,7 +208,7 @@ impl Arithmetic<LocalVariable> for LocalVariable {
             (LocalVariable::Double(num_a), LocalVariable::Double(num_b)) => {
                 Ok(LocalVariable::Double(num_a - num_b))
             }
-            def => {
+            _ => {
                 let (int_a, int_b) = (a.to_lv_int(), b.to_lv_int());
                 match (&int_a, &int_b)
                 {
@@ -223,7 +223,7 @@ impl Arithmetic<LocalVariable> for LocalVariable {
             (LocalVariable::Int(num_a), LocalVariable::Int(num_b)) => {
                 Ok(LocalVariable::Int(num_a & num_b))
             }
-            def => {
+            _ => {
                 let (int_a, int_b) = (a.to_lv_int(), b.to_lv_int());
                 match (&int_a, &int_b)
                 {
@@ -252,5 +252,5 @@ pub enum Flags {
     Super,
     Interface,
     Abstract,
-    Native
+    Native,
 }
