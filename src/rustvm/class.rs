@@ -18,6 +18,7 @@ pub struct Class
 }
 
 pub(crate) type ClassRef = Box<Class>;
+
 pub struct Object
 {
     pub(crate) class: ClassRef,
@@ -33,9 +34,14 @@ impl Object {
         dbg!("PUT FIELD", &self.fields);
     }
 
-    pub(crate) fn put_super_instance(&mut self, super_idx: usize)
+    pub(crate) fn put_super_instance(&mut self, super_idx: usize) -> Result<(), String>
     {
+        if (self.super_instance.is_some())
+        {
+            return Err(String::from("Multiple inheritance hasn't been implemented"));
+        }
         self.super_instance = Box::from(Some(super_idx));
+        Ok(())
     }
 
     pub(crate) fn get_super_instance(&self) -> Option<usize>
@@ -167,7 +173,7 @@ impl Class {
         self.static_fields.get(&field_name).ok_or(error_message).clone().cloned()
     }
 
-    pub(crate) fn put_static_field(&mut self, idx: u16, field_val: LocalVariable) -> Result<(), String>{
+    pub(crate) fn put_static_field(&mut self, idx: u16, field_val: LocalVariable) -> Result<(), String> {
         let (class_name, (method_name, _method_type)) = self.find_method_or_field(idx)?;
         dbg!("Putting field={} into={},val={}", &method_name, class_name, &field_val);
         self.static_fields.insert(method_name, field_val);

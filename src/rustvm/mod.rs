@@ -5,4 +5,4 @@ pub mod vm;
 
 mod executors;
 #[cfg(test)]
-mod frame_tests;
+mod executors_test;

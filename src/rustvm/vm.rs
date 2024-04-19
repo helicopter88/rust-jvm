@@ -593,7 +593,7 @@ impl VM
         let super_instance_idx: usize = self.new_object(class_name_ref);
 
         let this_instance = self.objects.get_mut(this_idx).unwrap();
-        this_instance.put_super_instance(super_instance_idx);
+        this_instance.put_super_instance(super_instance_idx)?;
         return Ok(LocalVariable::Reference(ObjectReference(this_instance.get_super_instance().unwrap())));
     }
 
