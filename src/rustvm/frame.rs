@@ -88,6 +88,8 @@ impl Frame {
                     for (idx, arg) in local_variables.iter().enumerate() {
                         f.locals[idx] = arg.clone();
                     }
+                } else {
+                    println!("Found attrib: {}", attrib.name.as_str())
                 }
             }
             return Err(format!("Couldn't find code for method {}: {} ({:?}/{:?})", method_name, method_type, &m.attributes, &m.flags));
