@@ -630,10 +630,11 @@ impl Frame {
                     let count_var = self.stack.pop_front().ok_or(anyhow!("No count for array"))?;
                     if let LocalVariable::Int(count) = count_var {
                         let arr_type = self.get_u8();
-                        self.stack.push_front(LocalVariable::Reference(ReferenceKind::ArrayReference(vm.new_array(arr_type, count as usize))))
+                        self.stack.push_front(LocalVariable::Reference(ReferenceKind::ArrayReference(vm.new_array(arr_type, count as usize))));
+                        Ok(())
                     } else {
-                        panic!("Wtf {:?}", count_var)
-                    }
+                        Err(anyhow!("Wtf {:?}", count_var))
+                    }?
                 }
                 0xBE /*arraylength */ => {
                     let array_ref = self.stack.pop_front().ok_or(anyhow!("No array ref"))?;

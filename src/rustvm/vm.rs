@@ -452,7 +452,7 @@ impl VM
             {
                 for attrib in &field.attributes {
                     if attrib.name == "ConstantValue" {
-                        let mut buf = [0 as u8; 2];
+                        let mut buf = [0u8; 2];
                         for idx in 0..=1 {
                             buf[idx] = attrib.data[0 + idx]
                         }

@@ -67,6 +67,11 @@ impl Class {
                       methods: Vec<Field>,
                       attributes: Vec<Attribute>) -> Self {
         let static_fields = Box::new(HashMap::from([("$assertionsDisabled".to_string(), LocalVariable::Boolean(true))]));
+
+        for field in fields
+        {
+            field.flags
+        }
         Class {
             constant_pool,
             name,
@@ -103,7 +108,7 @@ impl Class {
             ConstantPool::MethodHandle(kind, reference_) => {
                 let reference = *reference_ as usize;
                 match kind {
-                    1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 => {
+                    1..=9 => {
                         match cp.get(reference).ok_or(anyhow!("Pointed to non existing thing: {}", reference))? {
                             ConstantPool::FieldRef(class_idx, nat) | ConstantPool::MethodRef(class_idx, nat) | ConstantPool::InterfaceMethodRef(class_idx, nat) => {
                                 Ok((self.resolve_string(*class_idx as usize), self.find_name_and_type(*nat)?))
