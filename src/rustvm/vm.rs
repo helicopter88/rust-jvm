@@ -137,7 +137,7 @@ impl FileReader {
             let flags = self.read_u16();
             let name_idx = self.read_u16() as usize;
             let name = self.resolve_string(name_idx);
-            println!("Found this field '{}'", name);
+            //println!("Found this field '{}'", name);
             let descriptor_idx = self.read_u16() as usize;
             let descriptor = self.resolve_string(descriptor_idx);
             fields.push(Field::new(
@@ -613,10 +613,10 @@ impl VM
                 maybe_result = None;
             }
             let result = match frame.will_execute_native_method {
-                true => {
+                false => {
                     frame.exec(self)
                 }
-                false => {
+                true => {
                     frame.exec_native(self)
                 }
             };

@@ -63,6 +63,7 @@ pub trait Arithmetic<T>
     fn sum(a: &T, b: &T) -> Result<T, String>;
     fn sub(a: &T, b: &T) -> Result<T, String>;
     fn and(a: &T, b: &T) -> Result<T, String>;
+    fn shl(a: &T, b: &T) -> Result<T, String>;
 }
 
 #[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Clone)]
@@ -233,8 +234,23 @@ impl Arithmetic<LocalVariable> for LocalVariable {
             }
         }
     }
-}
 
+    fn shl(a: &LocalVariable, b: &LocalVariable) -> Result<LocalVariable, String> {
+        match (a, b) {
+            (LocalVariable::Long(num_a), LocalVariable::Int(num_b)) => {
+                Ok(LocalVariable::Long(num_a << num_b))
+            }
+            _ => {
+                let (int_a, int_b) = (a.to_lv_int(), b.to_lv_int());
+                match (&int_a, &int_b)
+                {
+                    (LocalVariable::Int(_), LocalVariable::Int(_)) => { LocalVariable::and(&int_a, &int_b) }
+                    _ => { Err(format!("SUM Mismatched types, {:?} {:?}", a, b).to_string()) }
+                }
+            }
+        }
+    }
+}
 pub const FLAG_PUBLIC: u16 = 1;
 pub const FLAG_STATIC: u16 = 0x0008;
 pub const FLAG_FINAL: u16 = 0x0010;

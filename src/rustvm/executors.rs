@@ -141,6 +141,9 @@ pub(crate) fn execute_bitwise(op: u8, stack: &mut Stack) -> Result<(), String>
         0x7e => {
             stack.push_front(LocalVariable::and(&b, &a)?);
         }
+        0x79 => {
+            stack.push_front(LocalVariable::shl(&b, &a)?);
+        }
         _ => { panic!("Wtf, op={:x}", op) }
     }
     Ok(())

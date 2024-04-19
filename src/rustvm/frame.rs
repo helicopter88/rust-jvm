@@ -75,8 +75,9 @@ fn read_u16_from_vec(data: &Vec<u8>, starting_point: usize) -> u16 {
 impl Frame {
     pub fn new(class: ClassRef, method_name: &str, local_variables: Vec<LocalVariable>, method_type: &str, vm: &mut VM) -> Result<Frame, String>
     {
-        let exec_method = |f: &mut Frame, m: &Field| -> Result<Frame, String> {
+        let exec_method = |f: &mut Frame, m: &Field| -> Result<(), String> {
             for attrib in &m.attributes {
+
                 if attrib.name.as_str() == "Code" && attrib.data.len() > 8 {
                     let mut d = [0u8; 2];
                     for (idx, a) in attrib.data[2..4].iter().enumerate() {
@@ -88,8 +89,7 @@ impl Frame {
                     for (idx, arg) in local_variables.iter().enumerate() {
                         f.locals[idx] = arg.clone();
                     }
-                } else {
-                    println!("Found attrib: {}", attrib.name.as_str())
+                    return Ok(());
                 }
             }
             return Err(format!("Couldn't find code for method {}: {} ({:?}/{:?})", method_name, method_type, &m.attributes, &m.flags));
@@ -121,7 +121,8 @@ impl Frame {
         {
             println!("Candidate method: '{}' -> '{}' - I am looking for '{}' -> '{}'", method.name, method.descriptor, method_name, method_type);
             if method.name.eq(method_name) && method.descriptor.eq(method_type) {
-                return exec_method(&mut f, method);
+                exec_method(&mut f, method)?;
+                return Ok(f);
             }
         }
 
@@ -194,7 +195,7 @@ impl Frame {
         loop {
             let curr_ip = self.ip;
             let op = self.code[curr_ip as usize];
-            dbg!(&(*self.class).borrow().name, &self.method_name, &self.method_type, op, curr_ip, &self.stack, &self.locals);
+            println!("Class={}, Method={}, Type={}, op={:#X}, ip={}, stack={:#?}, locals={:#?}", &self.class.name, &self.method_name, &self.method_type, op, curr_ip, &self.stack, &self.locals);
             match op {
                 0x0 /* nop */ => {}
                 0x1 /* aload_null */ => { self.stack.push_front(LocalVariable::Reference(ReferenceKind::Null())) }
@@ -267,6 +268,9 @@ impl Frame {
                 }
                 0x7e /* iand */ => {
                     execute_bitwise(op, &mut self.stack)?
+                }
+                0x79 /* ishl */ => {
+                    execute_bitwise(op, &mut self.stack)?;
                 }
                 0x84 /* iinc */ => {
                     let index = self.get_u8() as usize;
@@ -548,9 +552,9 @@ impl Frame {
                                 new_stack.push(self.stack.pop_front().ok_or(format!("Empty stack when calling new method, {} {} {}", method_name, method_type, ret))?);
                             }
                             new_stack.reverse();
-                            if class_name_ref != &(*self.class).borrow().name
+                            if class_name_ref != &self.class.name
                             {
-                                println!("This is another class name - {} -> {}", class_name_ref, &(*self.class).borrow().name);
+                                println!("This is another class name - {} -> {}", class_name_ref, &self.class.name);
                                 let this_ref = new_stack[0].clone();
                                 if let LocalVariable::Reference(ObjectReference(this_idx)) = this_ref {
                                     let super_class = vm.create_superclass(this_idx, class_name_ref)?;
@@ -560,16 +564,16 @@ impl Frame {
                                     panic!("Wtf")
                                 }
                             }
-                            let ret = Frame::new(class, &method_name, new_stack.clone(), &method_type, vm)?;
+                            let ret = Frame::new(class, &method_name, new_stack, &method_type, vm)?;
                             return Ok(ExecutionResult::Invoke(ret));
                         }
                         0xB8 /* invokeStatic */ => {
                             for _ in 1..=argc {
-                                new_stack.push(self.stack.pop_front().ok_or("Empty stack when calling new method")?);
+                                new_stack.push(self.stack.pop_front().ok_or(format!("Empty stack when calling new method, argc={}, stack_size={}", argc, self.stack.len()))?);
                             }
 
                             new_stack.reverse();
-                            let new_frame = Frame::new(class, &method_name, new_stack.clone(), &method_type, vm)?;
+                            let new_frame = Frame::new(class, &method_name, new_stack, &method_type, vm)?;
                             return Ok(ExecutionResult::Invoke(new_frame));
                         }
                         _ => {}
