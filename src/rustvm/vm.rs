@@ -83,7 +83,7 @@ impl FileReader {
                 0x13 => { ConstantPool::Module(self.read::<u16>()?) }
                 0x14 => { ConstantPool::Package(self.read::<u16>()?) }
                 num => {
-                    return Err(anyhow!("Unknown constant pool: {} {}, with size {}/{:?}", count, num, pool_size, constant_pool))
+                    return Err(anyhow!("Unknown constant pool: {} {}, with size {}/{:?}", count, num, pool_size, constant_pool));
                 }
             };
             match c {
@@ -130,7 +130,7 @@ impl FileReader {
     fn resolve_fields(&mut self) -> Result<Vec<Field>, anyhow::Error>
     {
         let mut fields: Vec<Field> = vec![];
-        let field_count =self.read::<u16>()?;
+        let field_count = self.read::<u16>()?;
         fields.reserve(field_count as usize);
         println!("Found this many fields={}", field_count);
         for _ in 0..field_count
@@ -200,7 +200,7 @@ impl FileReader {
         }
         let minor = self.read::<u16>()?;
 
-        let major =self.read::<u16>()?;
+        let major = self.read::<u16>()?;
         println!("Reading java file, version: {:X}, {}.{}", begin, major, minor);
         self.constant_pool = self.resolve_constant_pool()?;
         let constant_pool = self.constant_pool.clone();
@@ -232,8 +232,8 @@ impl FileReader {
     }
 
     fn read<T>(&mut self) -> anyhow::Result<T>
-    where
-        T: num_traits::int::PrimInt + Sized
+        where
+            T: num_traits::int::PrimInt + Sized
     {
         let size: usize = std::mem::size_of::<T>();
         let mut buf = vec![0; size];
@@ -265,7 +265,6 @@ impl VM
     pub fn new(file_name: &str, class_path: &str) -> Result<VM, anyhow::Error>
     {
         let classpath = Path::new(class_path);
-
 
         let mut ret = Self {
             classes: Box::new(HashMap::new()),
@@ -349,14 +348,34 @@ impl VM
             {
                 println!("Called system props");
                 // Hardcoded
-                let arr_idx = vm.new_array(12, 38)?;
-                Ok(LocalVariable::Reference(ArrayReference(arr_idx)))
+                let obj = vm.new_object("java/lang/String")?;
+                let string_class = vm.get_class("java/lang/String").unwrap();
+                let string = vm.new_string("DUMMY_SYSTEM_PROPERTY")?;
+                Frame::new(string_class, "<init>",
+                           [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ArrayReference(string))].to_vec()
+                           , "([C)V", vm)?.exec(vm)?;
+
+                let arr = vec![LocalVariable::Reference(ObjectReference(obj)); 38];
+                {
+                    vm.arrays.push(Box::new(arr));
+                }
+                Ok(LocalVariable::Reference(ArrayReference(vm.arrays.len() - 1)))
             }));
         ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "vmProperties"), Rc::new(|_class, _frame, _variables, vm|
             {
                 println!("Called VM props");
-                let arr_idx = vm.new_array(12, 10)?;
-                Ok(LocalVariable::Reference(ArrayReference(arr_idx)))
+                let obj = vm.new_object("java/lang/String")?;
+                let string_class = vm.get_class("java/lang/String").unwrap();
+                let string = vm.new_string("DUMMY_VM_PROPERTY")?;
+                Frame::new(string_class, "<init>",
+                           [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ArrayReference(string))].to_vec()
+                           , "([C)V", vm)?.exec(vm)?;
+
+                let arr = vec![LocalVariable::Reference(ObjectReference(obj)); 12];
+                {
+                    vm.arrays.push(Box::new(arr));
+                }
+                Ok(LocalVariable::Reference(ArrayReference(vm.arrays.len() - 1)))
             }));
         Ok(ret)
     }
@@ -421,10 +440,10 @@ impl VM
         let mut class = self.get_class(&class_name).unwrap();
         let mut fields = HashMap::new();
         let synthetic_field: u16 = FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC;
-        let native_field: u16 =  FLAG_NATIVE | FLAG_FINAL | FLAG_STATIC;
-        let final_static =  FLAG_FINAL | FLAG_STATIC;
+        let native_field: u16 = FLAG_NATIVE | FLAG_FINAL | FLAG_STATIC;
+        let final_static = FLAG_FINAL | FLAG_STATIC;
         for field in &class.fields {
-            if field.flags & (synthetic_field) == (synthetic_field) || field.flags & native_field ==  native_field {
+            if field.flags & (synthetic_field) == (synthetic_field) || field.flags & native_field == native_field {
                 if field.name == "$assertionsDisabled"
                 {
                     class.static_fields.insert(field.name.clone(), LocalVariable::Boolean(true));
@@ -502,7 +521,7 @@ impl VM
             12 => {
                 LocalVariable::Reference(Null())
             }
-            _ => { return Err(anyhow!("Invalid array_type={}", arr_type)) }
+            _ => { return Err(anyhow!("Invalid array_type={}", arr_type)); }
         };
         let arr = vec![arr_initializer; count + 1];
         println!("Initialising array, idx={}, type={}, count={}", self.arrays.len(), arr_type, &arr.len());

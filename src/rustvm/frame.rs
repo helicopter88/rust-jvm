@@ -627,10 +627,10 @@ impl Frame {
                     }
                 }
                 // Begin array area
-                0xBC /*newarray*/ => {
+                0xBC | 0xBD /*newarray, anewarray */ => {
                     let count_var = self.stack.pop_front().ok_or(anyhow!("No count for array"))?;
                     if let LocalVariable::Int(count) = count_var {
-                        let arr_type = self.get_u8();
+                        let arr_type = if op == 0xBD { 12 } else { self.get_u8() };
                         self.stack.push_front(LocalVariable::Reference(ReferenceKind::ArrayReference(vm.new_array(arr_type, count as usize)?)));
                         Ok(())
                     } else {
