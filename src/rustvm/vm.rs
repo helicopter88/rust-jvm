@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Error};
 
 use crate::rustvm::class::{Class, ClassRef, Object};
 use crate::rustvm::enums::{Attribute, ConstantPool, Field, FLAG_ABSTRACT, FLAG_FINAL, FLAG_NATIVE, FLAG_PUBLIC, FLAG_STATIC, FLAG_SUPER, FLAG_SYNTHETIC, Flags, LocalVariable};
@@ -300,13 +300,7 @@ impl VM
         ret.native_methods.insert(VM::make_native_method_name("java/lang/Class", "getName"), Rc::new(|_class, _frame, variables, vm| {
             if let LocalVariable::Reference(ClassReference(idx)) = &variables[0]
             {
-                let obj = vm.new_object("java/lang/String")?;
-                let string_class = vm.get_class("java/lang/String").unwrap();
-                let string = vm.new_string(&idx)?;
-                let res = Frame::new(string_class, "<init>",
-                                     [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ArrayReference(string))].to_vec()
-                                     , "([C)V", vm)?.exec(vm)?;
-                println!("getName returned {:?}", res);
+                let obj = Self::new_hardcoded_string(vm, &idx)?;
                 return Ok(LocalVariable::Reference(ObjectReference(obj)));
             }
             return Err(anyhow::Error::msg("Unexpected argument"));
@@ -346,15 +340,7 @@ impl VM
         }));
         ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "platformProperties"), Rc::new(|_class, _frame, _variables, vm|
             {
-                println!("Called system props");
-                // Hardcoded
-                let obj = vm.new_object("java/lang/String")?;
-                let string_class = vm.get_class("java/lang/String").unwrap();
-                let string = vm.new_string("DUMMY_SYSTEM_PROPERTY")?;
-                Frame::new(string_class, "<init>",
-                           [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ArrayReference(string))].to_vec()
-                           , "([C)V", vm)?.exec(vm)?;
-
+                let obj = Self::new_hardcoded_string(vm, "DUMMY_SYSTEM_PROP")?;
                 let arr = vec![LocalVariable::Reference(ObjectReference(obj)); 38];
                 {
                     vm.arrays.push(Box::new(arr));
@@ -363,14 +349,7 @@ impl VM
             }));
         ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "vmProperties"), Rc::new(|_class, _frame, _variables, vm|
             {
-                println!("Called VM props");
-                let obj = vm.new_object("java/lang/String")?;
-                let string_class = vm.get_class("java/lang/String").unwrap();
-                let string = vm.new_string("DUMMY_VM_PROPERTY")?;
-                Frame::new(string_class, "<init>",
-                           [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ArrayReference(string))].to_vec()
-                           , "([C)V", vm)?.exec(vm)?;
-
+                let obj = Self::new_hardcoded_string(vm, "DUMMY_VM_PROP")?;
                 let arr = vec![LocalVariable::Reference(ObjectReference(obj)); 12];
                 {
                     vm.arrays.push(Box::new(arr));
@@ -378,6 +357,16 @@ impl VM
                 Ok(LocalVariable::Reference(ArrayReference(vm.arrays.len() - 1)))
             }));
         Ok(ret)
+    }
+
+    fn new_hardcoded_string(vm: &mut VM, hardcoded_str: &str) -> Result<usize, Error> {
+        let obj = vm.new_object("java/lang/String")?;
+        let string_class = vm.get_class("java/lang/String").unwrap();
+        let string = vm.new_string(&hardcoded_str)?;
+        Frame::new(string_class, "<init>",
+                   [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ArrayReference(string))].to_vec()
+                   , "([C)V", vm)?.exec(vm)?;
+        Ok(obj)
     }
 
     pub(crate) fn make_native_method_name(class_name: &str, method_name: &str) -> String
