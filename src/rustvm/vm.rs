@@ -233,15 +233,17 @@ impl FileReader {
 
     fn read<T>(&mut self) -> anyhow::Result<T>
     where
-        T: num_traits::int::PrimInt
+        T: num_traits::int::PrimInt + Sized
     {
         let size: usize = std::mem::size_of::<T>();
         let mut buf = vec![0; size];
         self.file.read_exact(&mut buf)?;
-        let result_in_le: T = unsafe {
-            std::mem::transmute_copy(&buf[0])
-        };
-        Ok(T::from_be(result_in_le))
+        let mut res: T = T::zero();
+        for (i, char) in buf.iter().rev().enumerate()
+        {
+            res = res | ((T::from(char.clone()).unwrap()) << i * 8);
+        }
+        Ok(res)
     }
 
     fn read_variable(&mut self, size: usize) -> anyhow::Result<Vec<u8>>
