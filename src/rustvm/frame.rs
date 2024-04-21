@@ -5,7 +5,7 @@ use anyhow::anyhow;
 
 use crate::rustvm::class::ClassRef;
 use crate::rustvm::enums::{BootstrapMethod, ConstantPool, Field, LocalVariable, ReferenceKind};
-use crate::rustvm::enums::LocalVariable::Void;
+use crate::rustvm::enums::LocalVariable::{Boolean, Void};
 use crate::rustvm::enums::ReferenceKind::ObjectReference;
 use crate::rustvm::executors::*;
 use crate::rustvm::vm::VM;
@@ -31,7 +31,7 @@ pub(crate) struct Frame {
 pub(crate) enum ExecutionResult
 {
     FunctionCallResult(LocalVariable),
-    Invoke(Frame)
+    Invoke(Frame),
 }
 
 fn parse_type(prototype: &str) -> Result<(usize, String), anyhow::Error>
@@ -78,7 +78,6 @@ impl Frame {
     {
         let exec_method = |f: &mut Frame, m: &Field| -> Result<(), anyhow::Error> {
             for attrib in &m.attributes {
-
                 if attrib.name.as_str() == "Code" && attrib.data.len() > 8 {
                     let mut d = [0u8; 2];
                     for (idx, a) in attrib.data[2..4].iter().enumerate() {
@@ -597,6 +596,33 @@ impl Frame {
                         self.stack.push_front(item.clone());
                         self.stack.push_front(item.clone());
                     }
+                0x5a /* dup_x1 */ => {
+                    let item1 = self.stack.pop_front()
+                        .ok_or(anyhow!("Expected item 1 in the stack dup_x1"))?;
+                    let item2 = self.stack.pop_front()
+                        .ok_or(anyhow!("Expected item 2 in the stack dup_x1"))?;
+                    self.stack.push_front(item1.clone());
+                    self.stack.push_front(item2.clone());
+                    self.stack.push_front(item1.clone());
+                }
+                0x5b /* dup_x2 */ => {
+                    let item1 = self.stack.pop_front()
+                        .ok_or(anyhow!("Expected item 1 in the stack dup_x2"))?;
+                    let item2 = self.stack.pop_front()
+                        .ok_or(anyhow!("Expected item 2 in the stack dup_x2"))?;
+                    let item3 = self.stack.pop_front();
+                    if item3.is_some()
+                    {
+                        self.stack.push_front(item1.clone());
+                        self.stack.push_front(item3.unwrap().clone());
+                        self.stack.push_front(item2.clone());
+                        self.stack.push_front(item1.clone());
+                    } else {
+                        self.stack.push_front(item1.clone());
+                        self.stack.push_front(item2.clone());
+                        self.stack.push_front(item1.clone());
+                    }
+                }
                 0xAC /* ireturn */ | 0xB0  /* areturn */ => {
                     let ret = self.stack.pop_front()
                         .ok_or(anyhow!("Empty stack when returning"))?;
@@ -630,7 +656,11 @@ impl Frame {
                 0xBC | 0xBD /*newarray, anewarray */ => {
                     let count_var = self.stack.pop_front().ok_or(anyhow!("No count for array"))?;
                     if let LocalVariable::Int(count) = count_var {
-                        let arr_type = if op == 0xBD { 12 } else { self.get_u8() };
+                        // Discard the type, we only care about whether it's a reference or not as I am not really bothering with type checks
+                        let arr_type = if op == 0xBD {
+                            let _ = self.get_u16();
+                            12
+                        } else { self.get_u8() };
                         self.stack.push_front(LocalVariable::Reference(ReferenceKind::ArrayReference(vm.new_array(arr_type, count as usize)?)));
                         Ok(())
                     } else {
@@ -718,7 +748,6 @@ impl Frame {
                             }?;
                             vm.set_array_element(arr, index, LocalVariable::Double(value));
                             Ok(())
-
                         }
                         0x53 => {
                             let value = match value_var {
@@ -737,7 +766,6 @@ impl Frame {
                             println!("Hello I am about to set {} to {}", index, value);
                             vm.set_array_element(arr, index, LocalVariable::Char(value as u8 as char));
                             Ok(())
-
                         }
                         0x55 /* castore */ => {
                             let value = match value_var {
@@ -761,6 +789,28 @@ impl Frame {
                     let thing = &self.class.constant_pool[cp as usize];
                     if let ConstantPool::ClassIndex(_t) = thing {}
                     println!("Thing is {:?}", thing);
+                }
+                0xc1 /* instanceof */ => {
+                    let object = self.stack.pop_front().ok_or(anyhow!("Empty stack when popping"))?;
+                    let cp = self.get_u16();
+                    let class_ref = &self.class.constant_pool[cp as usize];
+                    if let LocalVariable::Reference(ObjectReference(obj)) = object
+                    {
+                        if let ConstantPool::ClassIndex(idx) = class_ref {
+                            let class_name = self.class.resolve_string(*idx as usize);
+                            println!("Comparing {} with {}", self.class.name, class_name);
+                            if self.class.name == class_name || class_name == self.class.super_class
+                            {
+                                self.stack.push_front(Boolean(true))
+                            }
+                            self.stack.push_front(Boolean(false));
+                            Ok(())
+                        } else {
+                            Err(anyhow!("Expected class type for instanceof"))
+                        }
+                    } else {
+                        Err(anyhow!("Wrong type for instance of, expected Object, got {:#?}", object))
+                    }?
                 }
                 def => {
                     return Err(anyhow!(format!("Couldn't execute {:x}-{}", def, def).to_string()));

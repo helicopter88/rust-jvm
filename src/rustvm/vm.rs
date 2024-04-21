@@ -563,6 +563,10 @@ impl VM
         Ok(LocalVariable::Reference(ObjectReference(this_instance.get_super_instance().unwrap())))
     }
 
+    pub(crate) fn instanceof(&self, lhs: ClassRef, rhs: usize) -> anyhow::Result<bool>
+    {
+        Ok(true)
+    }
     pub fn start(&mut self, main_class: String) -> Result<Option<LocalVariable>, anyhow::Error>
     {
         let mut frame_stack: VecDeque<Frame> = VecDeque::new();
