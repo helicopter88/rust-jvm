@@ -1,6 +1,7 @@
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use anyhow::anyhow;
+use crate::rustvm::enums::ReferenceKind::Null;
 
 #[derive(Clone)]
 pub(crate) struct Attribute {
@@ -85,9 +86,9 @@ pub enum LocalVariable {
     Int(i32),
     Float(f32),
     Reference(ReferenceKind),
-    ReturnAddress(u16),
+    Address(usize),
     Long(i64),
-    Double(f64),
+    Double(f64)
 }
 
 impl LocalVariable
@@ -123,12 +124,12 @@ impl LocalVariable
             LocalVariable::Double(_) => { self.clone() }
             LocalVariable::Void() => { self.clone() }
             LocalVariable::Int(i) => { LocalVariable::Long(*i as i64) }
-            LocalVariable::Reference(ReferenceKind::ArrayReference(addr)) => { LocalVariable::Long(*addr as i64) }
-            LocalVariable::Reference(ReferenceKind::ObjectReference(addr)) => { LocalVariable::Long(*addr as i64) }
-            LocalVariable::ReturnAddress(addr) => { LocalVariable::Long(*addr as i64) }
+            LocalVariable::Reference(ReferenceKind::ArrayReference(addr)) => { LocalVariable::Address(*addr) }
+            LocalVariable::Reference(ReferenceKind::ObjectReference(addr)) => { LocalVariable::Address(*addr) }
+            LocalVariable::Address(_) => { self.clone() }
             LocalVariable::Long(_) => { self.clone() }
             LocalVariable::Reference(ReferenceKind::ClassReference(_)) => { self.clone() }
-            LocalVariable::Reference(ReferenceKind::Null()) => { LocalVariable::Long(0) }
+            LocalVariable::Reference(Null()) => { LocalVariable::Reference(Null()) }
         }
     }
 }
@@ -140,8 +141,10 @@ impl PartialEq for LocalVariable {
         match (common_lhs, common_rhs) {
             (LocalVariable::Double(lhs), LocalVariable::Double(rhs)) => { lhs == rhs }
             (LocalVariable::Long(lhs), LocalVariable::Long(rhs)) => { lhs == rhs }
+            (LocalVariable::Address(lhs), LocalVariable::Address(rhs)) => { lhs == rhs }
             (LocalVariable::Reference(ReferenceKind::ClassReference(lhs)), LocalVariable::Reference(ReferenceKind::ClassReference(rhs))) => { lhs == rhs }
-            _ => { false }
+            (LocalVariable::Reference(Null()), LocalVariable::Reference(Null())) => { true }
+            (_, _) => { false }
         }
     }
 }
