@@ -299,7 +299,6 @@ impl Frame {
                 }
                 0x10 => /*bipush */ {
                     let byte = self.get_u8() as i8 as i32;
-                    println!("This is the number {}", byte);
                     self.stack.push_front(LocalVariable::Int(byte));
                 }
                 0x11 => /* sipush */ {
@@ -501,8 +500,7 @@ impl Frame {
 
                     let class_name_ref = &class_name;
                     let mut new_stack = vec![];
-                    let class = vm.get_class(class_name_ref)?
-                        .clone();
+                    let class = vm.get_class(class_name_ref)?;
                     let (argc, ret) = parse_type(&method_type)?;
 
                     match op {
@@ -533,6 +531,7 @@ impl Frame {
                                                 .ok_or(anyhow!("Object did not exist"))?
                                                 .put_field(&method_name, field_val);
                                         }
+                                        println!("HELLO Inserted field: {:#?} {} {:#?}", obj_ref, &method_name, vm.find_field(obj_ref, &method_name, &method_type));
                                         Ok(())
                                     } else {
                                         Err(anyhow!("Unexpected type {:?}", obj_ref))
@@ -554,20 +553,20 @@ impl Frame {
                             for _ in 0..=argc {
                                 new_stack.push(self.stack.pop_front().ok_or(anyhow!("Empty stack when calling new method, {} {} {}", method_name, method_type, ret))?);
                             }
-                            new_stack.reverse();
                             if class_name_ref != &self.class.name
                             {
                                 println!("This is another class name - {} -> {}", class_name_ref, &self.class.name);
-                                let this_ref = new_stack[0].clone();
+                                let this_ref = new_stack.pop().ok_or(anyhow!(""))?;
                                 if let LocalVariable::Reference(ObjectReference(this_idx)) = this_ref {
                                     let super_class = vm.create_superclass(this_idx, class_name_ref)?;
-                                    println!("New stack[0] was: {:?}->{:?}", &new_stack[0], super_class);
-                                    new_stack[0] = super_class;
+                                    println!("New stack[0] was: {:?}->{:?}", &new_stack, super_class);
+                                    new_stack.push(super_class);// = super_class;
                                     Ok(())
                                 } else {
-                                    Err(anyhow!("Wrong type in the stack"))
+                                    Err(anyhow!("Wrong type in the stack, found {:#?}, expected ObjectReference", this_ref))
                                 }?
                             }
+                            new_stack.reverse();
                             let ret = Frame::new(class, &method_name, new_stack, &method_type, vm)?;
                             self.ip += 1;
                             return Ok(ExecutionResult::Invoke(ret));
@@ -794,12 +793,16 @@ impl Frame {
                     let object = self.stack.pop_front().ok_or(anyhow!("Empty stack when popping"))?;
                     let cp = self.get_u16();
                     let class_ref = &self.class.constant_pool[cp as usize];
-                    if let LocalVariable::Reference(ObjectReference(obj)) = object
+                    if let LocalVariable::Reference(ObjectReference(_)) = object
                     {
                         if let ConstantPool::ClassIndex(idx) = class_ref {
                             let class_name = self.class.resolve_string(*idx as usize);
                             println!("Comparing {} with {}", self.class.name, class_name);
                             if self.class.name == class_name || class_name == self.class.super_class
+                            {
+                                self.stack.push_front(Boolean(true))
+                            }
+                            else if self.class.interfaces.contains(&class_name)
                             {
                                 self.stack.push_front(Boolean(true))
                             }

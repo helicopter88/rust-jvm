@@ -523,6 +523,7 @@ impl VM
         let object = self.objects.get(obj_ref).ok_or(anyhow!("Object did not exist"))?;
         let field_ref = &object.fields;
         let field_val = &field_ref.get(method_name);
+        println!("Fields for {:#?} are {:#?}", obj_ref, field_ref);
         if field_val.is_some()
         {
             return Ok(field_val.unwrap().clone());
@@ -550,7 +551,6 @@ impl VM
         {
             self.cl.load_class(&class.super_class)?;
         }
-        // TODO: static initialisers and class initialisers
         Ok(class)
     }
 
@@ -563,10 +563,6 @@ impl VM
         Ok(LocalVariable::Reference(ObjectReference(this_instance.get_super_instance().unwrap())))
     }
 
-    pub(crate) fn instanceof(&self, lhs: ClassRef, rhs: usize) -> anyhow::Result<bool>
-    {
-        Ok(true)
-    }
     pub fn start(&mut self, main_class: String) -> Result<Option<LocalVariable>, anyhow::Error>
     {
         let mut frame_stack: VecDeque<Frame> = VecDeque::new();

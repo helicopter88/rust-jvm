@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod enums_tests {
     use crate::rustvm::enums::{LocalVariable, ReferenceKind};
+    use crate::rustvm::enums::ReferenceKind::Null;
 
     #[test]
     fn test_lower_to_common()
@@ -24,7 +25,7 @@ mod enums_tests {
         {
             let lhs = LocalVariable::Reference(ReferenceKind::ArrayReference(12));
             let rhs = LocalVariable::Long(12);
-            assert_eq!(lhs, rhs);
+            assert_ne!(lhs, rhs);
         }
         {
             let lhs = LocalVariable::Reference(ReferenceKind::ArrayReference(12));
@@ -35,6 +36,16 @@ mod enums_tests {
             let lhs = LocalVariable::Double(12.);
             let rhs = LocalVariable::Long(55);
             assert_ne!(lhs, rhs);
+        }
+        {
+            let lhs = LocalVariable::Address(12);
+            let rhs = LocalVariable::Address(55);
+            assert_ne!(lhs, rhs);
+        }
+        {
+            let lhs = LocalVariable::Reference(Null());
+            let rhs = LocalVariable::Reference(Null());
+            assert_eq!(lhs, rhs);
         }
     }
 }

@@ -64,8 +64,8 @@ pub(crate) fn execute_astore(op: u8, locals: &mut Vec<LocalVariable>, stack: &mu
             locals[variable_to_store] = LocalVariable::Reference(addr);
             Ok(())
         }
-        LocalVariable::ReturnAddress(addr) => {
-            locals[variable_to_store] = LocalVariable::ReturnAddress(addr);
+        LocalVariable::Address(addr) => {
+            locals[variable_to_store] = LocalVariable::Address(addr);
             Ok(())
         }
         def => Err(anyhow!("Wrong type for astore ({:x}) {:#?}", op, def))
