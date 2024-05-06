@@ -6,3 +6,4 @@ pub mod vm;
 mod executors;
 #[cfg(test)]
 mod executors_test;
+mod enums_tests;

@@ -11,7 +11,7 @@ pub struct Class
     pub(crate) name: String,
     pub(crate) super_class: String,
     pub(crate) flags: Vec<Flags>,
-    interfaces: Vec<String>,
+    pub(crate) interfaces: Vec<String>,
     pub(crate) fields: Vec<Field>,
     pub(crate) methods: Vec<Field>,
     pub(crate) attributes: Vec<Attribute>,
@@ -39,7 +39,7 @@ impl Object {
     {
         if self.super_instance.is_some()
         {
-            return Err(anyhow!("Multiple inheritance hasn't been implemented"));
+            return Err(anyhow!("Multiple inheritance hasn't been implemented, class has={:#?} and I am trying to put {}", self.super_instance, super_idx));
         }
         self.super_instance = Box::from(Some(super_idx));
         Ok(())

@@ -5,4 +5,5 @@ authors = ["Domenico Marino <johnlemon.lol@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-    "anyhow" = "1.0.82"
+anyhow = "1.0.82"
+num-traits = "0.2.18"

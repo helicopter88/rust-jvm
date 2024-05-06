@@ -5,7 +5,7 @@ use anyhow::anyhow;
 
 use crate::rustvm::class::ClassRef;
 use crate::rustvm::enums::{BootstrapMethod, ConstantPool, Field, LocalVariable, ReferenceKind};
-use crate::rustvm::enums::LocalVariable::Void;
+use crate::rustvm::enums::LocalVariable::{Boolean, Void};
 use crate::rustvm::enums::ReferenceKind::ObjectReference;
 use crate::rustvm::executors::*;
 use crate::rustvm::vm::VM;
@@ -31,7 +31,7 @@ pub(crate) struct Frame {
 pub(crate) enum ExecutionResult
 {
     FunctionCallResult(LocalVariable),
-    Invoke(Frame)
+    Invoke(Frame),
 }
 
 fn parse_type(prototype: &str) -> Result<(usize, String), anyhow::Error>
@@ -78,7 +78,6 @@ impl Frame {
     {
         let exec_method = |f: &mut Frame, m: &Field| -> Result<(), anyhow::Error> {
             for attrib in &m.attributes {
-
                 if attrib.name.as_str() == "Code" && attrib.data.len() > 8 {
                     let mut d = [0u8; 2];
                     for (idx, a) in attrib.data[2..4].iter().enumerate() {
@@ -234,30 +233,33 @@ impl Frame {
                 0x1A | 0x1B | 0x1C | 0x1D/* iload_<n> */ => {
                     execute_iload_n(op, &self.locals, &mut self.stack)?
                 }
+                0x1E | 0x1F | 0x20 | 0x21 /* lload_<n> */ => {
+                    execute_lload_n(op, &self.locals, &mut self.stack)?
+                }
                 0x22 | 0x23 | 0x24 | 0x25/* iload_<n> */ => {
                     execute_fload_n(op, &self.locals, &mut self.stack)?
                 }
-                0x1e | 0x1f | 0x20 | 0x21 /* lload_<d> */ => {
+                0x9 | 0xa /* lconst_<i> */ => {
                     execute_load_long_const(op, &mut self.stack);
                 }
                 0x12 | 0x13 /*ldc*/ => {
                     let idx = match op {
-                        0x12 => { self.get_u8() as usize }
-                        0x13 => { self.get_u16() as usize }
-                        _ => { panic!("Can't happen"); }
-                    };
+                        0x12 => { Ok(self.get_u8() as usize) }
+                        0x13 => { Ok(self.get_u16() as usize) }
+                        _ => { Err(anyhow!("Can't happen")) }
+                    }?;
                     match &self.class.constant_pool.get(idx).ok_or(anyhow!("Couldn't find item in cp at {}", idx))? {
                         ConstantPool::Integer(num) => { self.stack.push_front(LocalVariable::Int(*num)); }
                         ConstantPool::Float(f) => { self.stack.push_front(LocalVariable::Float(*f)) }
                         ConstantPool::Long(num) => { self.stack.push_front(LocalVariable::Long(*num)); }
                         ConstantPool::Double(f) => { self.stack.push_front(LocalVariable::Double(*f)) }
                         ConstantPool::StringIndex(_s_idx) => {
-                            self.stack.push_front(LocalVariable::Reference(ObjectReference(vm.new_object("java/lang/String"))));
+                            self.stack.push_front(LocalVariable::Reference(ObjectReference(vm.new_object("java/lang/String")?)));
                         }
                         ConstantPool::ClassIndex(idx) => {
                             self.stack.push_front(LocalVariable::Reference(ReferenceKind::ClassReference(self.class.resolve_string(*idx as usize))))
                         }
-                        def => return Err(anyhow::Error::msg(format!("Unexpected item={:?}", def)))
+                        def => return Err(anyhow!("Unexpected item={:?}", def))
                     };
                 }
                 0x74 /* ineg */ => {
@@ -297,7 +299,6 @@ impl Frame {
                 }
                 0x10 => /*bipush */ {
                     let byte = self.get_u8() as i8 as i32;
-                    println!("This is the number {}", byte);
                     self.stack.push_front(LocalVariable::Int(byte));
                 }
                 0x11 => /* sipush */ {
@@ -499,8 +500,7 @@ impl Frame {
 
                     let class_name_ref = &class_name;
                     let mut new_stack = vec![];
-                    let class = vm.get_class(class_name_ref)?
-                        .clone();
+                    let class = vm.get_class(class_name_ref)?;
                     let (argc, ret) = parse_type(&method_type)?;
 
                     match op {
@@ -531,6 +531,7 @@ impl Frame {
                                                 .ok_or(anyhow!("Object did not exist"))?
                                                 .put_field(&method_name, field_val);
                                         }
+                                        println!("HELLO Inserted field: {:#?} {} {:#?}", obj_ref, &method_name, vm.find_field(obj_ref, &method_name, &method_type));
                                         Ok(())
                                     } else {
                                         Err(anyhow!("Unexpected type {:?}", obj_ref))
@@ -552,20 +553,20 @@ impl Frame {
                             for _ in 0..=argc {
                                 new_stack.push(self.stack.pop_front().ok_or(anyhow!("Empty stack when calling new method, {} {} {}", method_name, method_type, ret))?);
                             }
-                            new_stack.reverse();
                             if class_name_ref != &self.class.name
                             {
                                 println!("This is another class name - {} -> {}", class_name_ref, &self.class.name);
-                                let this_ref = new_stack[0].clone();
+                                let this_ref = new_stack.pop().ok_or(anyhow!(""))?;
                                 if let LocalVariable::Reference(ObjectReference(this_idx)) = this_ref {
                                     let super_class = vm.create_superclass(this_idx, class_name_ref)?;
-                                    println!("New stack[0] was: {:?}->{:?}", &new_stack[0], super_class);
-                                    new_stack[0] = super_class;
+                                    println!("New stack[0] was: {:?}->{:?}", &new_stack, super_class);
+                                    new_stack.push(super_class);// = super_class;
                                     Ok(())
                                 } else {
-                                    Err(anyhow!("Wrong type in the stack"))
+                                    Err(anyhow!("Wrong type in the stack, found {:#?}, expected ObjectReference", this_ref))
                                 }?
                             }
+                            new_stack.reverse();
                             let ret = Frame::new(class, &method_name, new_stack, &method_type, vm)?;
                             self.ip += 1;
                             return Ok(ExecutionResult::Invoke(ret));
@@ -594,6 +595,33 @@ impl Frame {
                         self.stack.push_front(item.clone());
                         self.stack.push_front(item.clone());
                     }
+                0x5a /* dup_x1 */ => {
+                    let item1 = self.stack.pop_front()
+                        .ok_or(anyhow!("Expected item 1 in the stack dup_x1"))?;
+                    let item2 = self.stack.pop_front()
+                        .ok_or(anyhow!("Expected item 2 in the stack dup_x1"))?;
+                    self.stack.push_front(item1.clone());
+                    self.stack.push_front(item2.clone());
+                    self.stack.push_front(item1.clone());
+                }
+                0x5b /* dup_x2 */ => {
+                    let item1 = self.stack.pop_front()
+                        .ok_or(anyhow!("Expected item 1 in the stack dup_x2"))?;
+                    let item2 = self.stack.pop_front()
+                        .ok_or(anyhow!("Expected item 2 in the stack dup_x2"))?;
+                    let item3 = self.stack.pop_front();
+                    if item3.is_some()
+                    {
+                        self.stack.push_front(item1.clone());
+                        self.stack.push_front(item3.unwrap().clone());
+                        self.stack.push_front(item2.clone());
+                        self.stack.push_front(item1.clone());
+                    } else {
+                        self.stack.push_front(item1.clone());
+                        self.stack.push_front(item2.clone());
+                        self.stack.push_front(item1.clone());
+                    }
+                }
                 0xAC /* ireturn */ | 0xB0  /* areturn */ => {
                     let ret = self.stack.pop_front()
                         .ok_or(anyhow!("Empty stack when returning"))?;
@@ -607,7 +635,7 @@ impl Frame {
                     let idx = self.get_u16();
                     let class_name = self.class.resolve_string(idx as usize);
 
-                    self.stack.push_front(LocalVariable::Reference(ObjectReference(vm.new_object(&class_name))));
+                    self.stack.push_front(LocalVariable::Reference(ObjectReference(vm.new_object(&class_name)?)));
                 }
                 0xC6 | 0xC7 /*if(non)null */ => {
                     let jump_idx = self.get_u16() as i16;
@@ -624,11 +652,15 @@ impl Frame {
                     }
                 }
                 // Begin array area
-                0xBC /*newarray*/ => {
+                0xBC | 0xBD /*newarray, anewarray */ => {
                     let count_var = self.stack.pop_front().ok_or(anyhow!("No count for array"))?;
                     if let LocalVariable::Int(count) = count_var {
-                        let arr_type = self.get_u8();
-                        self.stack.push_front(LocalVariable::Reference(ReferenceKind::ArrayReference(vm.new_array(arr_type, count as usize))));
+                        // Discard the type, we only care about whether it's a reference or not as I am not really bothering with type checks
+                        let arr_type = if op == 0xBD {
+                            let _ = self.get_u16();
+                            12
+                        } else { self.get_u8() };
+                        self.stack.push_front(LocalVariable::Reference(ReferenceKind::ArrayReference(vm.new_array(arr_type, count as usize)?)));
                         Ok(())
                     } else {
                         Err(anyhow!("Wtf {:?}", count_var))
@@ -715,7 +747,6 @@ impl Frame {
                             }?;
                             vm.set_array_element(arr, index, LocalVariable::Double(value));
                             Ok(())
-
                         }
                         0x53 => {
                             let value = match value_var {
@@ -734,7 +765,6 @@ impl Frame {
                             println!("Hello I am about to set {} to {}", index, value);
                             vm.set_array_element(arr, index, LocalVariable::Char(value as u8 as char));
                             Ok(())
-
                         }
                         0x55 /* castore */ => {
                             let value = match value_var {
@@ -758,6 +788,32 @@ impl Frame {
                     let thing = &self.class.constant_pool[cp as usize];
                     if let ConstantPool::ClassIndex(_t) = thing {}
                     println!("Thing is {:?}", thing);
+                }
+                0xc1 /* instanceof */ => {
+                    let object = self.stack.pop_front().ok_or(anyhow!("Empty stack when popping"))?;
+                    let cp = self.get_u16();
+                    let class_ref = &self.class.constant_pool[cp as usize];
+                    if let LocalVariable::Reference(ObjectReference(_)) = object
+                    {
+                        if let ConstantPool::ClassIndex(idx) = class_ref {
+                            let class_name = self.class.resolve_string(*idx as usize);
+                            println!("Comparing {} with {}", self.class.name, class_name);
+                            if self.class.name == class_name || class_name == self.class.super_class
+                            {
+                                self.stack.push_front(Boolean(true))
+                            }
+                            else if self.class.interfaces.contains(&class_name)
+                            {
+                                self.stack.push_front(Boolean(true))
+                            }
+                            self.stack.push_front(Boolean(false));
+                            Ok(())
+                        } else {
+                            Err(anyhow!("Expected class type for instanceof"))
+                        }
+                    } else {
+                        Err(anyhow!("Wrong type for instance of, expected Object, got {:#?}", object))
+                    }?
                 }
                 def => {
                     return Err(anyhow!(format!("Couldn't execute {:x}-{}", def, def).to_string()));

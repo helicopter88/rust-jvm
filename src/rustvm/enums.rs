@@ -1,6 +1,7 @@
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use anyhow::anyhow;
+use crate::rustvm::enums::ReferenceKind::Null;
 
 #[derive(Clone)]
 pub(crate) struct Attribute {
@@ -75,7 +76,7 @@ pub enum ReferenceKind {
     Null(),
 }
 
-#[derive(Debug, Clone, PartialOrd, PartialEq)]
+#[derive(Debug, Clone, PartialOrd)]
 pub enum LocalVariable {
     Void(),
     Boolean(bool),
@@ -85,19 +86,19 @@ pub enum LocalVariable {
     Int(i32),
     Float(f32),
     Reference(ReferenceKind),
-    ReturnAddress(u16),
+    Address(usize),
     Long(i64),
-    Double(f64),
+    Double(f64)
 }
 
 impl LocalVariable
 {
-    pub(crate) fn to_int(&self) -> i32
+    pub(crate) fn to_int(&self) -> anyhow::Result<i32>
     {
         match self.to_lv_int()
         {
-            LocalVariable::Int(i) => { return i; }
-            def => { panic!("Wut, got {:?}", def) }
+            LocalVariable::Int(i) => { return Ok(i); }
+            def => { Err(anyhow!("Wut, got {:?}", def)) }
         }
     }
     pub(crate) fn to_lv_int(&self) -> LocalVariable
@@ -111,24 +112,43 @@ impl LocalVariable
             _ => { self.clone() }
         }
     }
-}
-/*impl PartialEq for LocalVariable {
-fn eq(&self, other: &Self) -> bool {
-    match self {
-        LocalVariable::Void() => { false } ;
-        LocalVariable::Boolean(x) => { x == other.clone() }
-        LocalVariable::Byte(_) => {}
-        LocalVariable::Char(_) => {}
-        LocalVariable::Short(_) => {}
-        LocalVariable::Int(_) => {}
-        LocalVariable::Float(_) => {}
-        LocalVariable::Reference(_) => {}
-        LocalVariable::ReturnAddress(_) => {}
-        LocalVariable::Long(_) => {}
-        LocalVariable::Double(_) => {}
+    pub(crate) fn to_common_lv(&self) -> LocalVariable
+    {
+        match self {
+            LocalVariable::Boolean(true) => { LocalVariable::Long(1) }
+            LocalVariable::Boolean(false) => { LocalVariable::Long(0) }
+            LocalVariable::Byte(b) => { LocalVariable::Long(*b as i64) }
+            LocalVariable::Char(c) => { LocalVariable::Long(*c as i64) }
+            LocalVariable::Short(s) => { LocalVariable::Long(*s as i64) }
+            LocalVariable::Float(f) => { LocalVariable::Double(*f as f64) }
+            LocalVariable::Double(_) => { self.clone() }
+            LocalVariable::Void() => { self.clone() }
+            LocalVariable::Int(i) => { LocalVariable::Long(*i as i64) }
+            LocalVariable::Reference(ReferenceKind::ArrayReference(addr)) => { LocalVariable::Address(*addr) }
+            LocalVariable::Reference(ReferenceKind::ObjectReference(addr)) => { LocalVariable::Address(*addr) }
+            LocalVariable::Address(_) => { self.clone() }
+            LocalVariable::Long(_) => { self.clone() }
+            LocalVariable::Reference(ReferenceKind::ClassReference(_)) => { self.clone() }
+            LocalVariable::Reference(Null()) => { LocalVariable::Reference(Null()) }
+        }
     }
 }
-}*/
+
+impl PartialEq for LocalVariable {
+    fn eq(&self, other: &Self) -> bool {
+        let common_lhs = self.to_common_lv();
+        let common_rhs = other.to_common_lv();
+        match (common_lhs, common_rhs) {
+            (LocalVariable::Double(lhs), LocalVariable::Double(rhs)) => { lhs == rhs }
+            (LocalVariable::Long(lhs), LocalVariable::Long(rhs)) => { lhs == rhs }
+            (LocalVariable::Address(lhs), LocalVariable::Address(rhs)) => { lhs == rhs }
+            (LocalVariable::Reference(ReferenceKind::ClassReference(lhs)), LocalVariable::Reference(ReferenceKind::ClassReference(rhs))) => { lhs == rhs }
+            (LocalVariable::Reference(Null()), LocalVariable::Reference(Null())) => { true }
+            (_, _) => { false }
+        }
+    }
+}
+
 impl LocalVariable {
     pub(crate) fn from_constant_pool(cp: ConstantPool) -> LocalVariable {
         match cp {
@@ -252,6 +272,7 @@ impl Arithmetic<LocalVariable> for LocalVariable {
         }
     }
 }
+
 pub const FLAG_PUBLIC: u16 = 1;
 pub const FLAG_STATIC: u16 = 0x0008;
 pub const FLAG_FINAL: u16 = 0x0010;

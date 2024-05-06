@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Error};
 
 use crate::rustvm::class::{Class, ClassRef, Object};
 use crate::rustvm::enums::{Attribute, ConstantPool, Field, FLAG_ABSTRACT, FLAG_FINAL, FLAG_NATIVE, FLAG_PUBLIC, FLAG_STATIC, FLAG_SUPER, FLAG_SYNTHETIC, Flags, LocalVariable};
@@ -46,12 +46,12 @@ impl FileReader {
         }
         let mut ret = Self { file: file.unwrap(), constant_pool: vec![] };
 
-        return Ok(ret.read_class());
+        return Ok(ret.read_class()?);
     }
 
-    fn resolve_constant_pool(&mut self) -> Vec<ConstantPool>
+    fn resolve_constant_pool(&mut self) -> Result<Vec<ConstantPool>, anyhow::Error>
     {
-        let pool_size = self.read_u16() as usize;
+        let pool_size = self.read::<u16>()? as usize;
         let mut constant_pool: Vec<ConstantPool> = vec![Empty(); pool_size + 1];
         let mut count = 1;
         loop
@@ -60,30 +60,30 @@ impl FileReader {
             {
                 break;
             }
-            let tag = self.read_u8();
+            let tag = self.read::<u8>()?;
             let c: ConstantPool = match tag {
                 0x01 => {
-                    let size = self.read_u16() as usize;
-                    ConstantPool::JvmString(self.read_variable_as_str(size))
+                    let size = self.read::<u16>()? as usize;
+                    ConstantPool::JvmString(self.read_variable_as_str(size)?)
                 }
-                0x03 => { ConstantPool::Integer(self.read_i32()) }
-                0x04 => { ConstantPool::Float(self.read_i32() as f32) }
-                0x05 => { ConstantPool::Long(self.read_u64() as i64) }
-                0x06 => { ConstantPool::Double(self.read_u64() as f64) }
-                0x07 => { ConstantPool::ClassIndex(self.read_u16()) }
-                0x08 => { ConstantPool::StringIndex(self.read_u16()) }
-                0x09 => { ConstantPool::FieldRef(self.read_u16(), self.read_u16()) }
-                0x0a => { ConstantPool::MethodRef(self.read_u16(), self.read_u16()) }
-                0x0b => { ConstantPool::InterfaceMethodRef(self.read_u16(), self.read_u16()) }
-                0x0c => { ConstantPool::NameAndTypeIndex(self.read_u16(), self.read_u16()) }
-                0x0f => { ConstantPool::MethodHandle(self.read_u8(), self.read_u16()) }
-                0x10 => { ConstantPool::MethodType(self.read_u16()) }
-                0x11 => { ConstantPool::Dynamic(self.read_u16(), self.read_u16()) }
-                0x12 => { ConstantPool::InvokeDynamic(self.read_u16(), self.read_u16()) }
-                0x13 => { ConstantPool::Module(self.read_u16()) }
-                0x14 => { ConstantPool::Package(self.read_u16()) }
+                0x03 => { ConstantPool::Integer(self.read::<i32>()?) }
+                0x04 => { ConstantPool::Float(self.read::<u32>()? as f32) }
+                0x05 => { ConstantPool::Long(self.read::<i64>()?) }
+                0x06 => { ConstantPool::Double(self.read::<u64>()? as f64) }
+                0x07 => { ConstantPool::ClassIndex(self.read::<u16>()?) }
+                0x08 => { ConstantPool::StringIndex(self.read::<u16>()?) }
+                0x09 => { ConstantPool::FieldRef(self.read::<u16>()?, self.read::<u16>()?) }
+                0x0a => { ConstantPool::MethodRef(self.read::<u16>()?, self.read::<u16>()?) }
+                0x0b => { ConstantPool::InterfaceMethodRef(self.read::<u16>()?, self.read::<u16>()?) }
+                0x0c => { ConstantPool::NameAndTypeIndex(self.read::<u16>()?, self.read::<u16>()?) }
+                0x0f => { ConstantPool::MethodHandle(self.read::<u8>()?, self.read::<u16>()?) }
+                0x10 => { ConstantPool::MethodType(self.read::<u16>()?) }
+                0x11 => { ConstantPool::Dynamic(self.read::<u16>()?, self.read::<u16>()?) }
+                0x12 => { ConstantPool::InvokeDynamic(self.read::<u16>()?, self.read::<u16>()?) }
+                0x13 => { ConstantPool::Module(self.read::<u16>()?) }
+                0x14 => { ConstantPool::Package(self.read::<u16>()?) }
                 num => {
-                    panic!("Unknown constant pool: {} {}, with size {}/{:?}", count, num, pool_size, constant_pool);
+                    return Err(anyhow!("Unknown constant pool: {} {}, with size {}/{:?}", count, num, pool_size, constant_pool));
                 }
             };
             match c {
@@ -98,74 +98,72 @@ impl FileReader {
             }
             count += 1;
         }
-        constant_pool
+        Ok(constant_pool)
     }
 
-    pub(crate) fn resolve_string(&self, idx: usize) -> String
+    pub(crate) fn resolve_string(&self, idx: usize) -> Result<String, anyhow::Error>
     {
         return match &self.constant_pool[idx] {
-            ConstantPool::JvmString(str) => { str.to_string() }
+            ConstantPool::JvmString(str) => { Ok(str.to_string()) }
             ConstantPool::ClassIndex(recursive_idx) => {
                 self.resolve_string((*recursive_idx) as usize)
             }
             def => {
-                //panic!("Unexpected index, {} which is a {:#?}", idx, def);
-                panic!("Wtf Requested index: {} which is instead a {:#?}", idx, def);
+                Err(anyhow!("Requested index: {} which is instead a {:#?}", idx, def))
             }
         };
     }
 
-    pub fn resolve_interfaces(&mut self) -> Vec<String>
+    pub fn resolve_interfaces(&mut self) -> Result<Vec<String>, anyhow::Error>
     {
         let mut interfaces: Vec<String> = vec![];
-        let interface_count = self.read_u16();
+        let interface_count = self.read::<u16>()?;
         for _ in 0..interface_count
         {
-            let str_idx = self.read_u16() as usize;
-            let str = self.resolve_string(str_idx);
+            let str_idx = self.read::<u16>()? as usize;
+            let str = self.resolve_string(str_idx)?;
             interfaces.push(str)
         }
-        interfaces
+        Ok(interfaces)
     }
 
-    fn resolve_fields(&mut self) -> Vec<Field>
+    fn resolve_fields(&mut self) -> Result<Vec<Field>, anyhow::Error>
     {
         let mut fields: Vec<Field> = vec![];
-        let field_count = self.read_u16();
+        let field_count = self.read::<u16>()?;
         fields.reserve(field_count as usize);
         println!("Found this many fields={}", field_count);
         for _ in 0..field_count
         {
-            let flags = self.read_u16();
-            let name_idx = self.read_u16() as usize;
-            let name = self.resolve_string(name_idx);
-            //println!("Found this field '{}'", name);
-            let descriptor_idx = self.read_u16() as usize;
-            let descriptor = self.resolve_string(descriptor_idx);
+            let flags = self.read::<u16>()?;
+            let name_idx = self.read::<u16>()? as usize;
+            let name = self.resolve_string(name_idx)?;
+            let descriptor_idx = self.read::<u16>()? as usize;
+            let descriptor = self.resolve_string(descriptor_idx)?;
             fields.push(Field::new(
                 flags,
                 name,
                 descriptor,
-                self.resolve_attributes(),
+                self.resolve_attributes()?,
             ))
         }
-        fields
+        Ok(fields)
     }
 
-    fn resolve_attributes(&mut self) -> Vec<Attribute>
+    fn resolve_attributes(&mut self) -> anyhow::Result<Vec<Attribute>>
     {
         let mut attributes: Vec<Attribute> = vec![];
-        let attributes_count = self.read_u16();
+        let attributes_count = self.read::<u16>()?;
         attributes.reserve(attributes_count as _);
         for _ in 0..attributes_count
         {
-            let name_idx = self.read_u16() as usize;
-            let name = self.resolve_string(name_idx);
-            let data_len = self.read_u32() as usize;
-            let data = self.read_variable(data_len);
+            let name_idx = self.read::<u16>()? as usize;
+            let name = self.resolve_string(name_idx)?;
+            let data_len = self.read::<u32>()? as usize;
+            let data = self.read_variable(data_len)?;
             attributes.push(Attribute { name, data })
         }
-        attributes
+        Ok(attributes)
     }
 
     fn parse_flags(from: u16) -> Vec<Flags>
@@ -193,32 +191,35 @@ impl FileReader {
         }
         ret
     }
-    fn read_class(&mut self) -> ClassRef
+    fn read_class(&mut self) -> anyhow::Result<ClassRef>
     {
-        let begin = self.read_u32();
-        assert_eq!(begin, 0xCAFEBABE);
-        let minor = self.read_u16();
+        let begin = self.read::<u32>()?;
+        if begin != 0xCAFEBABEu32
+        {
+            return Err(anyhow!("Invalid magic, found {:#X}, expected={:#x}", begin, 0xCAFEBABEu32));
+        }
+        let minor = self.read::<u16>()?;
 
-        let major = self.read_u16();
+        let major = self.read::<u16>()?;
         println!("Reading java file, version: {:X}, {}.{}", begin, major, minor);
-        self.constant_pool = self.resolve_constant_pool();
+        self.constant_pool = self.resolve_constant_pool()?;
         let constant_pool = self.constant_pool.clone();
 
-        let flags = Self::parse_flags(self.read_u16()).clone();
-        let name_idx = self.read_u16() as usize;
-        let name = self.resolve_string(name_idx);
-        let super_idx = self.read_u16() as usize;
+        let flags = Self::parse_flags(self.read::<u16>()?).clone();
+        let name_idx = self.read::<u16>()? as usize;
+        let name = self.resolve_string(name_idx)?;
+        let super_idx = self.read::<u16>()? as usize;
         let mut super_class = "".to_string();
         if super_idx != 0
         {
-            super_class = self.resolve_string(super_idx);
+            super_class = self.resolve_string(super_idx)?;
         }
         println!("Loading class={} super={}", &name, &super_class);
-        let interfaces = self.resolve_interfaces();
-        let fields = self.resolve_fields();
-        let methods = self.resolve_fields();
-        let attributes = self.resolve_attributes();
-        Box::new(Class::new(
+        let interfaces = self.resolve_interfaces()?;
+        let fields = self.resolve_fields()?;
+        let methods = self.resolve_fields()?;
+        let attributes = self.resolve_attributes()?;
+        Ok(Box::new(Class::new(
             constant_pool.to_vec(),
             name,
             super_class,
@@ -227,56 +228,35 @@ impl FileReader {
             fields,
             methods,
             attributes,
-        ))
+        )))
     }
 
-
-    fn read_u8(&mut self) -> u8
+    fn read<T>(&mut self) -> anyhow::Result<T>
+        where
+            T: num_traits::int::PrimInt + Sized
     {
-        let mut buf = [0; 1];
-        assert!(self.file.read_exact(&mut buf).is_ok());
-        u8::from_be_bytes(buf)
+        let size: usize = std::mem::size_of::<T>();
+        let mut buf = vec![0; size];
+        self.file.read_exact(&mut buf)?;
+        let mut res: T = T::zero();
+        for (i, char) in buf.iter().rev().enumerate()
+        {
+            res = res | ((T::from(char.clone()).unwrap()) << i * 8);
+        }
+        Ok(res)
     }
 
-    fn read_u16(&mut self) -> u16
-    {
-        let mut buf = [0; 2];
-        assert!(self.file.read_exact(&mut buf).is_ok());
-        u16::from_be_bytes(buf)
-    }
-
-    fn read_i32(&mut self) -> i32
-    {
-        let mut buf = [0; 4];
-        assert!(self.file.read_exact(&mut buf).is_ok());
-        i32::from_be_bytes(buf)
-    }
-
-    fn read_u32(&mut self) -> u32
-    {
-        let mut buf = [0; 4];
-        assert!(self.file.read_exact(&mut buf).is_ok());
-        u32::from_be_bytes(buf)
-    }
-
-    fn read_u64(&mut self) -> u64
-    {
-        let mut buf = [0; 8];
-        assert!(self.file.read_exact(&mut buf).is_ok());
-        u64::from_be_bytes(buf)
-    }
-
-    fn read_variable(&mut self, size: usize) -> Vec<u8>
+    fn read_variable(&mut self, size: usize) -> anyhow::Result<Vec<u8>>
     {
         let mut buf: Vec<u8> = vec![0; size];
-        assert!(self.file.read_exact(buf.as_mut_slice()).is_ok());
-        buf
+        self.file.read_exact(buf.as_mut_slice())?;
+        Ok(buf)
     }
 
-    fn read_variable_as_str(&mut self, size: usize) -> String
+    fn read_variable_as_str(&mut self, size: usize) -> anyhow::Result<String>
     {
-        let buf = self.read_variable(size);
-        String::from_utf8(buf.clone()).unwrap_or("Wtf".to_string())
+        let buf = self.read_variable(size)?;
+        Ok(String::from_utf8(buf.clone())?)
     }
 }
 
@@ -285,7 +265,6 @@ impl VM
     pub fn new(file_name: &str, class_path: &str) -> Result<VM, anyhow::Error>
     {
         let classpath = Path::new(class_path);
-
 
         let mut ret = Self {
             classes: Box::new(HashMap::new()),
@@ -308,40 +287,30 @@ impl VM
 
                 return Ok(LocalVariable::Reference(ClassReference(obj)));
             } else {
-                panic!("Wtf")
+                Err(anyhow!("Wrong variable type, found={:#?}, expected=ObjectReference", &variables[0]))
             }
         }));
         ret.native_methods.insert(VM::make_native_method_name("java/lang/Object", "hashCode"), Rc::new(|_class, _frame, variables, _| {
             if let LocalVariable::Reference(ObjectReference(idx)) = variables[0] {
                 return Ok(LocalVariable::Int(idx as i32 * 3));
             } else {
-                panic!("Wtf")
+                Err(anyhow!("Wrong variable type, found={:#?}, expected=ObjectReference", &variables[0]))
             }
         }));
         ret.native_methods.insert(VM::make_native_method_name("java/lang/Class", "getName"), Rc::new(|_class, _frame, variables, vm| {
             if let LocalVariable::Reference(ClassReference(idx)) = &variables[0]
             {
-                let obj = vm.new_object("java/lang/String");
-                let string_class = vm.get_class("java/lang/String").unwrap();
-                let array = vm.new_string(&idx);
-                let res = Frame::new(string_class, "<init>",
-                                     [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ArrayReference(array))].to_vec()
-                                     , "([C)V", vm)?.exec(vm);
-                println!("getName returned {:?}", res);
-                if res.is_err()
-                {
-                    panic!("Error occurred when running getName, err={}", res.err().unwrap());
-                }
+                let obj = Self::new_hardcoded_string(vm, &idx)?;
                 return Ok(LocalVariable::Reference(ObjectReference(obj)));
             }
             return Err(anyhow::Error::msg("Unexpected argument"));
         }));
         ret.native_methods.insert(VM::make_native_method_name("java/lang/System", "arraycopy"), Rc::new(|_class, _frame, variables, vm| {
             let src = variables[0].clone();
-            let _start = variables[1].clone().to_int() as usize;
+            let _start = variables[1].clone().to_int()? as usize;
             let dst = variables[2].clone();
-            let end = variables[3].clone().to_int() as usize;
-            let len = variables[4].clone().to_int() as usize;
+            let end = variables[3].clone().to_int()? as usize;
+            let len = variables[4].clone().to_int()? as usize;
             if let LocalVariable::Reference(ArrayReference(src_ref)) = src
             {
                 if let LocalVariable::Reference(ArrayReference(dst_ref)) = dst
@@ -371,17 +340,33 @@ impl VM
         }));
         ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "platformProperties"), Rc::new(|_class, _frame, _variables, vm|
             {
-                println!("Called system props");
-                let arr_idx = vm.new_array(12, 38);
-                Ok(LocalVariable::Reference(ArrayReference(arr_idx)))
+                let obj = Self::new_hardcoded_string(vm, "DUMMY_SYSTEM_PROP")?;
+                let arr = vec![LocalVariable::Reference(ObjectReference(obj)); 38];
+                {
+                    vm.arrays.push(Box::new(arr));
+                }
+                Ok(LocalVariable::Reference(ArrayReference(vm.arrays.len() - 1)))
             }));
         ret.native_methods.insert(VM::make_native_method_name("jdk/internal/util/SystemProps$Raw", "vmProperties"), Rc::new(|_class, _frame, _variables, vm|
             {
-                println!("Called VM props");
-                let arr_idx = vm.new_array(12, 10);
-                Ok(LocalVariable::Reference(ArrayReference(arr_idx)))
+                let obj = Self::new_hardcoded_string(vm, "DUMMY_VM_PROP")?;
+                let arr = vec![LocalVariable::Reference(ObjectReference(obj)); 12];
+                {
+                    vm.arrays.push(Box::new(arr));
+                }
+                Ok(LocalVariable::Reference(ArrayReference(vm.arrays.len() - 1)))
             }));
         Ok(ret)
+    }
+
+    fn new_hardcoded_string(vm: &mut VM, hardcoded_str: &str) -> Result<usize, Error> {
+        let obj = vm.new_object("java/lang/String")?;
+        let string_class = vm.get_class("java/lang/String").unwrap();
+        let string = vm.new_string(&hardcoded_str)?;
+        Frame::new(string_class, "<init>",
+                   [LocalVariable::Reference(ObjectReference(obj)), LocalVariable::Reference(ArrayReference(string))].to_vec()
+                   , "([C)V", vm)?.exec(vm)?;
+        Ok(obj)
     }
 
     pub(crate) fn make_native_method_name(class_name: &str, method_name: &str) -> String
@@ -398,9 +383,9 @@ impl VM
         return &t[1..t.len() - 1];
     }
 
-    fn default_initialiser(&mut self, descriptor: &str, is_final: bool) -> LocalVariable
+    fn default_initialiser(&mut self, descriptor: &str, is_final: bool) -> anyhow::Result<LocalVariable>
     {
-        match descriptor.chars().nth(0).unwrap() {
+        Ok(match descriptor.chars().nth(0).unwrap() {
             'B' => {
                 LocalVariable::Byte(0)
             }
@@ -421,7 +406,7 @@ impl VM
             }
             'L' => {
                 if is_final {
-                    LocalVariable::Reference(ObjectReference(self.new_object(VM::type_to_class(descriptor))))
+                    LocalVariable::Reference(ObjectReference(self.new_object(VM::type_to_class(descriptor))?))
                 } else {
                     LocalVariable::Reference(Null())
                 }
@@ -434,25 +419,28 @@ impl VM
                     LocalVariable::Reference(Null())
                 }
             _ => {
-                panic!("descriptor {}", descriptor);
+                return Err(anyhow!("Invalid descriptor: {}", descriptor));
             }
-        }
+        })
     }
 
-    pub(crate) fn new_object(&mut self, class_name: &str) -> usize
+    pub(crate) fn new_object(&mut self, class_name: &str) -> anyhow::Result<usize>
     {
         let mut class = self.get_class(&class_name).unwrap();
         let mut fields = HashMap::new();
+        let synthetic_field: u16 = FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC;
+        let native_field: u16 = FLAG_NATIVE | FLAG_FINAL | FLAG_STATIC;
+        let final_static = FLAG_FINAL | FLAG_STATIC;
         for field in &class.fields {
-            if field.flags & (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) == (FLAG_SYNTHETIC | FLAG_FINAL | FLAG_STATIC) || field.flags & FLAG_NATIVE | FLAG_FINAL | FLAG_STATIC == (FLAG_NATIVE | FLAG_FINAL | FLAG_STATIC) {
+            if field.flags & (synthetic_field) == (synthetic_field) || field.flags & native_field == native_field {
                 if field.name == "$assertionsDisabled"
                 {
                     class.static_fields.insert(field.name.clone(), LocalVariable::Boolean(true));
                 } else {
-                    class.static_fields.insert(field.name.clone(), self.default_initialiser(field.descriptor.as_str(), true));
+                    class.static_fields.insert(field.name.clone(), self.default_initialiser(field.descriptor.as_str(), true)?);
                 }
             }
-            if field.flags & FLAG_FINAL | FLAG_STATIC == FLAG_FINAL | FLAG_STATIC && VM::type_to_class(&field.descriptor) != class_name
+            if field.flags & final_static == final_static && VM::type_to_class(&field.descriptor) != class_name
             {
                 for attrib in &field.attributes {
                     if attrib.name == "ConstantValue" {
@@ -467,9 +455,9 @@ impl VM
                         continue;
                     }
                 }
-                class.static_fields.insert(field.name.clone(), self.default_initialiser(&field.descriptor, true));
+                class.static_fields.insert(field.name.clone(), self.default_initialiser(&field.descriptor, true)?);
             } else {
-                fields.insert(field.name.clone(), self.default_initialiser(&field.descriptor, false));
+                fields.insert(field.name.clone(), self.default_initialiser(&field.descriptor, false)?);
             }
         }
         self.objects.push(Object {
@@ -477,24 +465,23 @@ impl VM
             super_instance: Box::new(None),
             fields: Box::new(fields),
         });
-        self.objects.len() - 1
+        Ok(self.objects.len() - 1)
     }
 
     pub(crate) fn set_array_element(&mut self, array: usize, idx: usize, elem: LocalVariable) {
-        println!("The array is {:?}", self.arrays[array]);
         self.arrays[array][idx] = elem;
     }
 
-    pub(crate) fn new_string(&mut self, string: &str) -> usize {
-        let array = self.new_array(5, string.len());
+    pub(crate) fn new_string(&mut self, string: &str) -> anyhow::Result<usize> {
+        let array = self.new_array(5, string.len())?;
         println!("Creating new string array, idx={} for str={}", array, string);
         for (idx, char) in string.chars().enumerate()
         {
             self.arrays[array][idx] = LocalVariable::Char(char)
         }
-        array
+        Ok(array)
     }
-    pub(crate) fn new_array(&mut self, arr_type: u8, count: usize) -> usize {
+    pub(crate) fn new_array(&mut self, arr_type: u8, count: usize) -> anyhow::Result<usize> {
         let arr_initializer = match arr_type {
             4 => {
                 LocalVariable::Boolean(false)
@@ -523,12 +510,12 @@ impl VM
             12 => {
                 LocalVariable::Reference(Null())
             }
-            _ => { panic!("no"); }
+            _ => { return Err(anyhow!("Invalid array_type={}", arr_type)); }
         };
         let arr = vec![arr_initializer; count + 1];
         println!("Initialising array, idx={}, type={}, count={}", self.arrays.len(), arr_type, &arr.len());
         self.arrays.push(Box::new(arr));
-        return self.arrays.len() - 1;
+        return Ok(self.arrays.len() - 1);
     }
 
     pub(crate) fn find_field(&self, obj_ref: usize, method_name: &str, method_type: &str) -> Result<LocalVariable, anyhow::Error>
@@ -536,6 +523,7 @@ impl VM
         let object = self.objects.get(obj_ref).ok_or(anyhow!("Object did not exist"))?;
         let field_ref = &object.fields;
         let field_val = &field_ref.get(method_name);
+        println!("Fields for {:#?} are {:#?}", obj_ref, field_ref);
         if field_val.is_some()
         {
             return Ok(field_val.unwrap().clone());
@@ -563,17 +551,16 @@ impl VM
         {
             self.cl.load_class(&class.super_class)?;
         }
-        // TODO: static initialisers and class initialisers
         Ok(class)
     }
 
     pub(crate) fn create_superclass(&mut self, this_idx: usize, class_name_ref: &str) -> Result<LocalVariable, anyhow::Error>
     {
-        let super_instance_idx: usize = self.new_object(class_name_ref);
+        let super_instance_idx: usize = self.new_object(class_name_ref)?;
 
         let this_instance = self.objects.get_mut(this_idx).unwrap();
         this_instance.put_super_instance(super_instance_idx)?;
-        return Ok(LocalVariable::Reference(ObjectReference(this_instance.get_super_instance().unwrap())));
+        Ok(LocalVariable::Reference(ObjectReference(this_instance.get_super_instance().unwrap())))
     }
 
     pub fn start(&mut self, main_class: String) -> Result<Option<LocalVariable>, anyhow::Error>
